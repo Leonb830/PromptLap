@@ -44,6 +44,17 @@ async function ollamaFetch(pathname, options = {}) {
   return response.json();
 }
 
+function normalizeErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  try {
+    const parsed = JSON.parse(message);
+    return parsed.error || parsed.message || message;
+  } catch {
+    return message;
+  }
+}
+
 async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
   const client = new OpenAI({
     apiKey,
@@ -60,6 +71,98 @@ async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
   });
 
   return { role: "assistant", content: response.output_text || "" };
+}
+
+function extractJsonBlock(text) {
+  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch ? fencedMatch[1] : text;
+  const arrayStart = candidate.indexOf("[");
+  const objectStart = candidate.indexOf("{");
+
+  if (arrayStart >= 0 && (objectStart === -1 || arrayStart < objectStart)) {
+    return candidate.slice(arrayStart, candidate.lastIndexOf("]") + 1);
+  }
+
+  if (objectStart >= 0) {
+    return candidate.slice(objectStart, candidate.lastIndexOf("}") + 1);
+  }
+
+  return candidate;
+}
+
+function normalizeSuggestionItems(parsed) {
+  const items = Array.isArray(parsed) ? parsed : parsed.suggestions;
+  if (!Array.isArray(items)) {
+    throw new Error("The model did not return a suggestions array.");
+  }
+
+  return items
+    .map((item, index) => ({
+      id: item.id || `suggestion-${index + 1}`,
+      label: item.label || item.title || "Suggestion",
+      hint: item.hint || item.reason || item.description || "",
+      snippet: item.snippet || item.rewrite || item.insert || "",
+    }))
+    .filter((item) => item.hint && item.snippet);
+}
+
+function parseSuggestionResponse(text) {
+  const jsonText = extractJsonBlock(text);
+  const parsed = JSON.parse(jsonText);
+  return normalizeSuggestionItems(parsed);
+}
+
+function buildSuggestionPrompt(systemPrompt) {
+  return [
+    "Review this system prompt and return practical improvements.",
+    "Respond with JSON only.",
+    'Use this exact shape: {"suggestions":[{"id":"short-kebab-id","label":"short title","hint":"why this helps","snippet":"text to append or replace with"}]}',
+    "Return 0 to 5 suggestions.",
+    "Focus on specificity, constraints, audience, structure, and vague wording.",
+    "Do not include markdown fences.",
+    "",
+    "System prompt to review:",
+    systemPrompt,
+  ].join("\n");
+}
+
+async function apiPromptSuggestions({ apiBaseUrl, apiKey, model, systemPrompt }) {
+  const client = new OpenAI({
+    apiKey,
+    baseURL: apiBaseUrl.replace(/\/$/, ""),
+  });
+
+  const response = await client.responses.create({
+    model,
+    instructions:
+      "You are a prompt engineering reviewer. Return only valid JSON that matches the requested schema.",
+    input: buildSuggestionPrompt(systemPrompt),
+  });
+
+  return parseSuggestionResponse(response.output_text || "");
+}
+
+async function ollamaPromptSuggestions({ model, systemPrompt }) {
+  const data = await ollamaFetch("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a prompt engineering reviewer. Return only valid JSON with a top-level suggestions array.",
+        },
+        {
+          role: "user",
+          content: buildSuggestionPrompt(systemPrompt),
+        },
+      ],
+    }),
+  });
+
+  return parseSuggestionResponse(data.message?.content || "");
 }
 
 async function apiModels({ apiBaseUrl, apiKey }) {
@@ -121,7 +224,7 @@ app.post("/api/api-models", async (request, response) => {
   try {
     response.json({ models: await apiModels({ apiBaseUrl, apiKey }) });
   } catch (error) {
-    response.status(502).json({ message: error.message });
+    response.status(502).json({ message: normalizeErrorMessage(error) });
   }
 });
 
@@ -181,7 +284,44 @@ app.post("/api/chat", async (request, response) => {
       content: data.message?.content || "",
     });
   } catch (error) {
-    response.status(502).json({ message: error.message });
+    response.status(502).json({ message: normalizeErrorMessage(error) });
+  }
+});
+
+app.post("/api/prompt-suggestions", async (request, response) => {
+  const {
+    provider = "ollama",
+    model,
+    systemPrompt,
+    apiBaseUrl,
+    apiKey,
+  } = request.body || {};
+  const effectiveProvider =
+    provider === "api" || apiBaseUrl || apiKey ? "api" : "ollama";
+
+  if (!model || !systemPrompt) {
+    response
+      .status(400)
+      .json({ message: "model and systemPrompt are required to improve the prompt." });
+    return;
+  }
+
+  if (effectiveProvider === "api" && (!apiBaseUrl || !apiKey)) {
+    response
+      .status(400)
+      .json({ message: "apiBaseUrl and apiKey are required for API suggestions." });
+    return;
+  }
+
+  try {
+    const suggestions =
+      effectiveProvider === "api"
+        ? await apiPromptSuggestions({ apiBaseUrl, apiKey, model, systemPrompt })
+        : await ollamaPromptSuggestions({ model, systemPrompt });
+
+    response.json({ suggestions });
+  } catch (error) {
+    response.status(502).json({ message: normalizeErrorMessage(error) });
   }
 });
 

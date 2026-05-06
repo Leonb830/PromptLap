@@ -207,15 +207,19 @@ function App() {
   const [isSending, setIsSending] = useState(false);
   const [isLoadingApiModels, setIsLoadingApiModels] = useState(false);
   const [apiModelStatus, setApiModelStatus] = useState({ type: "idle", message: "" });
+  const [aiSuggestions, setAiSuggestions] = useState([]);
+  const [isImprovingPrompt, setIsImprovingPrompt] = useState(false);
+  const [suggestionStatus, setSuggestionStatus] = useState({ type: "idle", message: "" });
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
   const isApiReady =
     Boolean(apiSettings.baseUrl.trim()) && Boolean(apiSettings.apiKey.trim()) && Boolean(apiSettings.model.trim());
+  const promptText = isEditingAgent ? agentDraft.systemPrompt : activeAgent?.systemPrompt || "";
 
   const promptScore = useMemo(() => {
-    const passed = promptChecks.filter((check) => check.test(activeAgent?.systemPrompt || ""));
+    const passed = promptChecks.filter((check) => check.test(promptText));
     return { passed, total: promptChecks.length, value: passed.length / promptChecks.length };
-  }, [activeAgent]);
+  }, [promptText]);
 
   useEffect(() => {
     localStorage.setItem("prompt-lab-agents", JSON.stringify(agents));
@@ -231,6 +235,8 @@ function App() {
 
   useEffect(() => {
     setAgentDraft(createDraft(activeAgent));
+    setAiSuggestions([]);
+    setSuggestionStatus({ type: "idle", message: "" });
   }, [activeAgent?.id]);
 
   async function refreshOllama() {
@@ -256,6 +262,25 @@ function App() {
   function updateApiSettings(updates) {
     setApiSettings((current) => ({ ...current, ...updates }));
     setApiModelStatus({ type: "idle", message: "" });
+  }
+
+  function applyPromptSuggestion(suggestionId, snippet) {
+    setAgentDraft((current) => {
+      const existing = current.systemPrompt.trim();
+      const separator = existing ? "\n" : "";
+      return { ...current, systemPrompt: `${existing}${separator}${snippet}` };
+    });
+    setAiSuggestions((current) => {
+      const remaining = current.filter((suggestion) => suggestion.id !== suggestionId);
+      setSuggestionStatus({
+        type: remaining.length ? "success" : "empty",
+        message: remaining.length
+          ? `${remaining.length} suggestions remaining.`
+          : "All current suggestions have been applied."
+      });
+      return remaining;
+    });
+    setIsEditingAgent(true);
   }
 
   async function refreshApiModels() {
@@ -382,6 +407,44 @@ function App() {
     setDraft("");
   }
 
+  async function improvePrompt() {
+    const selectedModel = provider === "api" ? apiSettings.model.trim() : model;
+    if (!promptText.trim() || !selectedModel || isImprovingPrompt) return;
+
+    setIsImprovingPrompt(true);
+    setSuggestionStatus({ type: "loading", message: "Thinking about this prompt..." });
+
+    try {
+      const response = await fetch(apiUrl("/api/prompt-suggestions"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          model: selectedModel,
+          systemPrompt: promptText,
+          apiBaseUrl: apiSettings.baseUrl.trim(),
+          apiKey: apiSettings.apiKey.trim()
+        })
+      });
+      const data = await readApiJson(response, "Could not improve this prompt.");
+      if (!response.ok) throw new Error(data.message || "Could not improve this prompt.");
+
+      const nextSuggestions = data.suggestions || [];
+      setAiSuggestions(nextSuggestions);
+      setSuggestionStatus({
+        type: nextSuggestions.length ? "success" : "empty",
+        message: nextSuggestions.length
+          ? `${nextSuggestions.length} suggestions ready.`
+          : "The AI thinks this prompt is already in solid shape."
+      });
+    } catch (error) {
+      setAiSuggestions([]);
+      setSuggestionStatus({ type: "error", message: error.message });
+    } finally {
+      setIsImprovingPrompt(false);
+    }
+  }
+
   async function sendMessage(event) {
     event.preventDefault();
     const content = draft.trim();
@@ -400,7 +463,7 @@ function App() {
         body: JSON.stringify({
           provider,
           model: selectedModel,
-          systemPrompt: activeAgent.systemPrompt,
+          systemPrompt: promptText,
           messages: nextMessages,
           apiBaseUrl: apiSettings.baseUrl.trim(),
           apiKey: apiSettings.apiKey.trim()
@@ -652,6 +715,55 @@ function App() {
               />
             </label>
 
+            <div className="suggestion-panel">
+              <div className="suggestion-head">
+                <div>
+                  <p className="eyebrow">Inline suggestions</p>
+                  <h3>Sharpen this prompt as you write</h3>
+                </div>
+                <button
+                  className="improve-button"
+                  disabled={
+                    isImprovingPrompt ||
+                    !promptText.trim() ||
+                    (provider === "ollama" && !model) ||
+                    (provider === "api" && !isApiReady)
+                  }
+                  onClick={improvePrompt}
+                  type="button"
+                >
+                  {isImprovingPrompt && <span className="spinner" aria-hidden="true" data-icon="inline-start" />}
+                  {isImprovingPrompt ? "Loading..." : "Improve"}
+                </button>
+              </div>
+              <p className={`suggestion-status ${suggestionStatus.type}`}>
+                {suggestionStatus.message || "Ask the active model to review this system prompt and suggest sharper wording."}
+              </p>
+              {aiSuggestions.length ? (
+                <div className="suggestion-list">
+                  {aiSuggestions.map((suggestion) => (
+                    <article className="suggestion-card" key={suggestion.id}>
+                      <div>
+                        <strong>{suggestion.label}</strong>
+                        <p>{suggestion.hint}</p>
+                      </div>
+                      <button
+                        onClick={() => applyPromptSuggestion(suggestion.id, suggestion.snippet)}
+                        type="button"
+                      >
+                        <Wand2 size={14} />
+                        Apply
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              ) : suggestionStatus.type === "empty" ? (
+                <p className="suggestion-empty">
+                  This prompt already covers the main basics: role, audience, boundaries, and structure.
+                </p>
+              ) : null}
+            </div>
+
             <button className="template-trigger" onClick={() => setIsTemplateModalOpen(true)} type="button">
               <FileText size={16} />
               Prompt templates
@@ -668,7 +780,7 @@ function App() {
                 <h3>Prompt shape</h3>
                 <div className="check-grid">
                   {promptChecks.map((check) => {
-                    const passed = check.test(activeAgent.systemPrompt);
+                    const passed = check.test(promptText);
                     return (
                       <span className={passed ? "check is-passed" : "check"} key={check.label}>
                         {passed ? <CheckCircle2 size={15} /> : <Lightbulb size={15} />}
