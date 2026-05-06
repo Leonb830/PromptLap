@@ -86,6 +86,14 @@ function createDraft(agent) {
   };
 }
 
+function SidebarIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+      <path d="M0 3a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm5-1v12h9a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1zM4 2H2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h2z" />
+    </svg>
+  );
+}
+
 function App() {
   const [agents, setAgents] = useState(loadAgents);
   const [activeId, setActiveId] = useState(() => loadAgents()[0]?.id || "coach");
@@ -96,6 +104,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [agentDraft, setAgentDraft] = useState(() => createDraft(loadAgents()[0]));
   const [isEditingAgent, setIsEditingAgent] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
@@ -246,21 +255,32 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${isSidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
       <aside className="agent-rail" aria-label="Agents">
-        <div className="brand-block">
-          <div className="brand-mark">
-            <Sparkles size={20} />
+        <div className="sidebar-head">
+          <div className="brand-block">
+            <div className="brand-mark">
+              <Sparkles size={20} />
+            </div>
+            <div className="sidebar-copy">
+              <p className="eyebrow">Prompt Lab</p>
+              <h1>Agent practice desk</h1>
+            </div>
           </div>
-          <div>
-            <p className="eyebrow">Prompt Lab</p>
-            <h1>Agent practice desk</h1>
-          </div>
+          <button
+            className="sidebar-toggle"
+            onClick={() => setIsSidebarCollapsed((current) => !current)}
+            title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-pressed={isSidebarCollapsed}
+          >
+            <SidebarIcon />
+          </button>
         </div>
 
         <button className="primary-action" onClick={createAgent}>
           <Plus size={18} />
-          New agent
+          <span>New agent</span>
         </button>
 
         <div className="agent-list">
