@@ -8,13 +8,15 @@ import {
   Gauge,
   Lightbulb,
   MessageSquarePlus,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
   Send,
   Sparkles,
   Trash2,
-  Wand2
+  Wand2,
+  X
 } from "lucide-react";
 import "./styles.css";
 
@@ -76,6 +78,14 @@ function loadAgents() {
   }
 }
 
+function createDraft(agent) {
+  return {
+    name: agent?.name || "",
+    goal: agent?.goal || "",
+    systemPrompt: agent?.systemPrompt || ""
+  };
+}
+
 function App() {
   const [agents, setAgents] = useState(loadAgents);
   const [activeId, setActiveId] = useState(() => loadAgents()[0]?.id || "coach");
@@ -84,6 +94,8 @@ function App() {
   const [health, setHealth] = useState({ ok: false, message: "Checking Ollama..." });
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
+  const [agentDraft, setAgentDraft] = useState(() => createDraft(loadAgents()[0]));
+  const [isEditingAgent, setIsEditingAgent] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
@@ -100,6 +112,10 @@ function App() {
   useEffect(() => {
     refreshOllama();
   }, []);
+
+  useEffect(() => {
+    setAgentDraft(createDraft(activeAgent));
+  }, [activeAgent?.id]);
 
   async function refreshOllama() {
     setHealth({ ok: false, message: "Checking Ollama..." });
@@ -121,12 +137,6 @@ function App() {
     }
   }
 
-  function updateActiveAgent(updates) {
-    setAgents((current) =>
-      current.map((agent) => (agent.id === activeAgent.id ? { ...agent, ...updates } : agent))
-    );
-  }
-
   function createAgent() {
     const nextAgent = {
       id: crypto.randomUUID(),
@@ -138,14 +148,55 @@ function App() {
     };
     setAgents((current) => [nextAgent, ...current]);
     setActiveId(nextAgent.id);
+    setAgentDraft(createDraft(nextAgent));
+    setIsEditingAgent(true);
     setMessages([]);
   }
 
   function deleteAgent(id) {
     if (agents.length === 1) return;
+    const agent = agents.find((item) => item.id === id);
+    const confirmed = window.confirm(`Delete "${agent?.name || "this agent"}"? This cannot be undone.`);
+    if (!confirmed) return;
+
     const remaining = agents.filter((agent) => agent.id !== id);
     setAgents(remaining);
     setActiveId(remaining[0].id);
+    setIsEditingAgent(false);
+    setMessages([]);
+  }
+
+  function selectAgent(id) {
+    setActiveId(id);
+    setIsEditingAgent(false);
+    setMessages([]);
+  }
+
+  function startEditingAgent() {
+    setAgentDraft(createDraft(activeAgent));
+    setIsEditingAgent(true);
+  }
+
+  function cancelEditingAgent() {
+    setAgentDraft(createDraft(activeAgent));
+    setIsEditingAgent(false);
+  }
+
+  function saveAgent() {
+    const updates = {
+      name: agentDraft.name.trim() || "Untitled agent",
+      goal: agentDraft.goal.trim() || "No learning goal set.",
+      systemPrompt: agentDraft.systemPrompt.trim()
+    };
+
+    if (!updates.systemPrompt) {
+      updates.systemPrompt = "You are a helpful assistant. Ask for missing context and answer clearly.";
+    }
+
+    setAgents((current) =>
+      current.map((agent) => (agent.id === activeAgent.id ? { ...agent, ...updates } : agent))
+    );
+    setIsEditingAgent(false);
     setMessages([]);
   }
 
@@ -217,10 +268,7 @@ function App() {
             <button
               className={`agent-card ${agent.id === activeAgent.id ? "is-active" : ""}`}
               key={agent.id}
-              onClick={() => {
-                setActiveId(agent.id);
-                setMessages([]);
-              }}
+              onClick={() => selectAgent(agent.id)}
             >
               <Bot size={18} />
               <span>
@@ -267,7 +315,26 @@ function App() {
                 <button className="icon-button" onClick={duplicatePrompt} title="Copy system prompt">
                   <Copy size={17} />
                 </button>
-                <button className="icon-button danger" onClick={() => deleteAgent(activeAgent.id)} title="Delete agent">
+                {isEditingAgent ? (
+                  <>
+                    <button className="icon-button" onClick={cancelEditingAgent} title="Cancel edits">
+                      <X size={17} />
+                    </button>
+                    <button className="icon-button save" onClick={saveAgent} title="Save agent">
+                      <Save size={17} />
+                    </button>
+                  </>
+                ) : (
+                  <button className="icon-button" onClick={startEditingAgent} title="Edit agent">
+                    <Pencil size={17} />
+                  </button>
+                )}
+                <button
+                  className="icon-button danger"
+                  disabled={agents.length === 1}
+                  onClick={() => deleteAgent(activeAgent.id)}
+                  title={agents.length === 1 ? "Keep at least one agent" : "Delete agent"}
+                >
                   <Trash2 size={17} />
                 </button>
               </div>
@@ -276,24 +343,29 @@ function App() {
             <label>
               Agent name
               <input
-                value={activeAgent.name}
-                onChange={(event) => updateActiveAgent({ name: event.target.value })}
+                readOnly={!isEditingAgent}
+                value={isEditingAgent ? agentDraft.name : activeAgent.name}
+                onChange={(event) => setAgentDraft((current) => ({ ...current, name: event.target.value }))}
               />
             </label>
 
             <label>
               Learning goal
               <input
-                value={activeAgent.goal}
-                onChange={(event) => updateActiveAgent({ goal: event.target.value })}
+                readOnly={!isEditingAgent}
+                value={isEditingAgent ? agentDraft.goal : activeAgent.goal}
+                onChange={(event) => setAgentDraft((current) => ({ ...current, goal: event.target.value }))}
               />
             </label>
 
             <label className="prompt-field">
               System prompt
               <textarea
-                value={activeAgent.systemPrompt}
-                onChange={(event) => updateActiveAgent({ systemPrompt: event.target.value })}
+                readOnly={!isEditingAgent}
+                value={isEditingAgent ? agentDraft.systemPrompt : activeAgent.systemPrompt}
+                onChange={(event) =>
+                  setAgentDraft((current) => ({ ...current, systemPrompt: event.target.value }))
+                }
                 spellCheck="true"
               />
             </label>
