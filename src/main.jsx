@@ -203,6 +203,7 @@ function App() {
   const [agentDraft, setAgentDraft] = useState(() => createDraft(loadAgents()[0]));
   const [isEditingAgent, setIsEditingAgent] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isLoadingApiModels, setIsLoadingApiModels] = useState(false);
   const [apiModelStatus, setApiModelStatus] = useState({ type: "idle", message: "" });
@@ -314,12 +315,14 @@ function App() {
     setActiveId(nextAgent.id);
     setAgentDraft(createDraft(nextAgent));
     setIsEditingAgent(true);
+    setIsTemplateModalOpen(false);
     setMessages([]);
   }
 
   function applyTemplateToDraft(template) {
     setAgentDraft(createDraft(template));
     setIsEditingAgent(true);
+    setIsTemplateModalOpen(false);
     setMessages([]);
   }
 
@@ -649,33 +652,10 @@ function App() {
               />
             </label>
 
-            <div className="template-panel">
-              <div>
-                <p className="eyebrow">Prompt templates</p>
-                <h3>Start from a proven pattern</h3>
-              </div>
-              <div className="template-grid">
-                {promptTemplates.map((template) => (
-                  <article className="template-card" key={template.id}>
-                    <div>
-                      <span>{template.category}</span>
-                      <strong>{template.name}</strong>
-                      <p>{template.goal}</p>
-                    </div>
-                    <div className="template-actions">
-                      <button onClick={() => createAgentFromTemplate(template)} type="button">
-                        <Plus size={14} />
-                        New
-                      </button>
-                      <button onClick={() => applyTemplateToDraft(template)} type="button">
-                        <FileText size={14} />
-                        Apply
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </div>
+            <button className="template-trigger" onClick={() => setIsTemplateModalOpen(true)} type="button">
+              <FileText size={16} />
+              Prompt templates
+            </button>
 
             <div className="score-panel">
               <div className="score-ring" style={{ "--score": `${promptScore.value * 100}%` }}>
@@ -768,6 +748,50 @@ function App() {
           </section>
         </div>
       </section>
+
+      {isTemplateModalOpen && (
+        <div className="template-modal-backdrop" onClick={() => setIsTemplateModalOpen(false)} role="presentation">
+          <section
+            className="template-modal"
+            aria-labelledby="template-modal-title"
+            aria-modal="true"
+            role="dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="template-modal-head">
+              <div>
+                <p className="eyebrow">Prompt templates</p>
+                <h2 id="template-modal-title">Start from a proven pattern</h2>
+              </div>
+              <button className="icon-button" onClick={() => setIsTemplateModalOpen(false)} title="Close templates">
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="template-grid">
+              {promptTemplates.map((template) => (
+                <article className="template-card" key={template.id}>
+                  <div>
+                    <span>{template.category}</span>
+                    <strong>{template.name}</strong>
+                    <p>{template.goal}</p>
+                  </div>
+                  <div className="template-actions">
+                    <button onClick={() => createAgentFromTemplate(template)} type="button">
+                      <Plus size={14} />
+                      New
+                    </button>
+                    <button onClick={() => applyTemplateToDraft(template)} type="button">
+                      <FileText size={14} />
+                      Apply
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

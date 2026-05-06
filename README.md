@@ -7,6 +7,8 @@ A small local website for practicing AI prompting with Ollama or an OpenAI-compa
 - Node.js 20+
 - Ollama running locally with at least one pulled model, or an API key for an OpenAI-compatible chat API
 
+Here is how to install node.js 'https://nodejs.org/en/download'
+
 ## Run
 
 ```bash
