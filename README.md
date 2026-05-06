@@ -34,9 +34,9 @@ Switch the connection type from `Ollama` to `API` in the top bar, then enter:
 
 - API base URL, for example `https://api.openai.com/v1`
 - API key
-- Model name, for example `gpt-4o-mini`
+- Model name, for example `gpt-5.5`
 
-The backend sends requests to `{API base URL}/chat/completions`, so API mode works with providers that support the OpenAI chat completions shape. API settings are stored in this local browser's storage for convenience.
+The backend uses the official OpenAI Node SDK. Chat requests go through the Responses API with `client.responses.create`, and the model refresh button uses `client.models.list` to show model IDs available to your key. Once models are loaded, the model field becomes a dropdown and automatically selects an available model if the saved one is invalid. API settings are stored in this local browser's storage for convenience.
 
 ## What It Does
 

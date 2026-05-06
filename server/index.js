@@ -1,4 +1,5 @@
 import express from "express";
+import OpenAI from "openai";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,14 +11,29 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
 app.use(express.json({ limit: "1mb" }));
+app.use((request, response, next) => {
+  const origin = request.headers.origin;
+  if (origin && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+
+  if (request.method === "OPTIONS") {
+    response.sendStatus(204);
+    return;
+  }
+
+  next();
+});
 
 async function ollamaFetch(pathname, options = {}) {
   const response = await fetch(`${ollamaBaseUrl}${pathname}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...options.headers
-    }
+      ...options.headers,
+    },
   });
 
   if (!response.ok) {
@@ -29,30 +45,38 @@ async function ollamaFetch(pathname, options = {}) {
 }
 
 async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
-  const normalizedBaseUrl = apiBaseUrl.replace(/\/$/, "");
-  const response = await fetch(`${normalizedBaseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages.map(({ role, content }) => ({ role, content }))
-      ]
-    })
+  const client = new OpenAI({
+    apiKey,
+    baseURL: apiBaseUrl.replace(/\/$/, ""),
   });
 
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `AI API responded with ${response.status}`);
+  const response = await client.responses.create({
+    model,
+    instructions: systemPrompt,
+    input: messages.map(({ role, content }) => ({
+      role: role === "assistant" ? "assistant" : "user",
+      content,
+    })),
+  });
+
+  return { role: "assistant", content: response.output_text || "" };
+}
+
+async function apiModels({ apiBaseUrl, apiKey }) {
+  const client = new OpenAI({
+    apiKey,
+    baseURL: apiBaseUrl.replace(/\/$/, ""),
+  });
+
+  const models = [];
+  for await (const model of client.models.list()) {
+    models.push(model);
   }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
-  return { role: "assistant", content };
+  return models
+    .map((model) => ({ name: model.id }))
+    .filter((model) => model.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 app.get("/api/health", async (_request, response) => {
@@ -63,7 +87,8 @@ app.get("/api/health", async (_request, response) => {
     response.status(503).json({
       ok: false,
       ollamaBaseUrl,
-      message: "Ollama is not reachable. Start Ollama and pull a model before chatting."
+      message:
+        "Ollama is not reachable. Start Ollama and pull a model before chatting.",
     });
   }
 });
@@ -75,30 +100,66 @@ app.get("/api/models", async (_request, response) => {
       models: (data.models || []).map((model) => ({
         name: model.name,
         size: model.size,
-        modifiedAt: model.modified_at
-      }))
+        modifiedAt: model.modified_at,
+      })),
     });
   } catch (error) {
     response.status(503).json({ message: error.message });
   }
 });
 
-app.post("/api/chat", async (request, response) => {
-  const { provider = "ollama", model, systemPrompt, messages, apiBaseUrl, apiKey } = request.body || {};
+app.post("/api/api-models", async (request, response) => {
+  const { apiBaseUrl, apiKey } = request.body || {};
 
-  if (!model || !systemPrompt || !Array.isArray(messages)) {
-    response.status(400).json({ message: "model, systemPrompt, and messages are required." });
-    return;
-  }
-
-  if (provider === "api" && (!apiBaseUrl || !apiKey)) {
-    response.status(400).json({ message: "apiBaseUrl and apiKey are required for API chat." });
+  if (!apiBaseUrl || !apiKey) {
+    response
+      .status(400)
+      .json({ message: "apiBaseUrl and apiKey are required to list API models." });
     return;
   }
 
   try {
-    if (provider === "api") {
-      const data = await apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages });
+    response.json({ models: await apiModels({ apiBaseUrl, apiKey }) });
+  } catch (error) {
+    response.status(502).json({ message: error.message });
+  }
+});
+
+app.post("/api/chat", async (request, response) => {
+  const {
+    provider = "ollama",
+    model,
+    systemPrompt,
+    messages,
+    apiBaseUrl,
+    apiKey,
+  } = request.body || {};
+  const effectiveProvider =
+    provider === "api" || apiBaseUrl || apiKey ? "api" : "ollama";
+
+  if (!model || !systemPrompt || !Array.isArray(messages)) {
+    response
+      .status(400)
+      .json({ message: "model, systemPrompt, and messages are required." });
+    return;
+  }
+
+  if (effectiveProvider === "api" && (!apiBaseUrl || !apiKey)) {
+    response
+      .status(400)
+      .json({ message: "apiBaseUrl and apiKey are required for API chat." });
+    return;
+  }
+
+  try {
+    if (effectiveProvider === "api") {
+      const data = await apiChat({
+        apiBaseUrl,
+        apiKey,
+        model,
+        systemPrompt,
+        messages,
+      });
       response.json(data);
       return;
     }
@@ -110,14 +171,14 @@ app.post("/api/chat", async (request, response) => {
         stream: false,
         messages: [
           { role: "system", content: systemPrompt },
-          ...messages.map(({ role, content }) => ({ role, content }))
-        ]
-      })
+          ...messages.map(({ role, content }) => ({ role, content })),
+        ],
+      }),
     });
 
     response.json({
       role: data.message?.role || "assistant",
-      content: data.message?.content || ""
+      content: data.message?.content || "",
     });
   } catch (error) {
     response.status(502).json({ message: error.message });

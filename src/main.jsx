@@ -73,8 +73,11 @@ const followUpIdeas = [
 const defaultApiSettings = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
-  model: "gpt-4o-mini"
+  model: "gpt-5.5"
 };
+
+const apiBaseUrl =
+  import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3001" : "");
 
 function loadAgents() {
   try {
@@ -109,10 +112,34 @@ function SidebarIcon() {
   );
 }
 
+async function readApiJson(response, fallbackMessage) {
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    return text ? JSON.parse(text) : {};
+  }
+
+  if (text.trim().startsWith("<!DOCTYPE") || text.trim().startsWith("<html")) {
+    throw new Error("The app received HTML instead of API JSON. Restart `npm run dev` so the Express API routes are active.");
+  }
+
+  if (!response.ok) {
+    throw new Error(text || fallbackMessage);
+  }
+
+  throw new Error(fallbackMessage);
+}
+
+function apiUrl(path) {
+  return `${apiBaseUrl}${path}`;
+}
+
 function App() {
   const [agents, setAgents] = useState(loadAgents);
   const [activeId, setActiveId] = useState(() => loadAgents()[0]?.id || "coach");
   const [models, setModels] = useState([]);
+  const [apiModels, setApiModels] = useState([]);
   const [model, setModel] = useState("");
   const [provider, setProvider] = useState("ollama");
   const [apiSettings, setApiSettings] = useState(loadApiSettings);
@@ -123,6 +150,8 @@ function App() {
   const [isEditingAgent, setIsEditingAgent] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isLoadingApiModels, setIsLoadingApiModels] = useState(false);
+  const [apiModelStatus, setApiModelStatus] = useState({ type: "idle", message: "" });
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
   const isApiReady =
@@ -153,11 +182,11 @@ function App() {
     setHealth({ ok: false, message: "Checking Ollama..." });
     try {
       const [healthResponse, modelsResponse] = await Promise.all([
-        fetch("/api/health"),
-        fetch("/api/models")
+        fetch(apiUrl("/api/health")),
+        fetch(apiUrl("/api/models"))
       ]);
-      const healthData = await healthResponse.json();
-      const modelsData = await modelsResponse.json();
+      const healthData = await readApiJson(healthResponse, "Could not check Ollama health.");
+      const modelsData = await readApiJson(modelsResponse, "Could not load Ollama models.");
       setHealth(healthData);
       setModels(modelsData.models || []);
       setModel((current) => current || modelsData.models?.[0]?.name || "");
@@ -171,6 +200,42 @@ function App() {
 
   function updateApiSettings(updates) {
     setApiSettings((current) => ({ ...current, ...updates }));
+    setApiModelStatus({ type: "idle", message: "" });
+  }
+
+  async function refreshApiModels() {
+    if (!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim()) return;
+
+    setIsLoadingApiModels(true);
+    setApiModelStatus({ type: "loading", message: "Loading models from OpenAI..." });
+    try {
+      const response = await fetch(apiUrl("/api/api-models"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiBaseUrl: apiSettings.baseUrl.trim(),
+          apiKey: apiSettings.apiKey.trim()
+        })
+      });
+      const data = await readApiJson(response, "Could not load API models.");
+      if (!response.ok) throw new Error(data.message || "Could not load API models.");
+      const nextModels = data.models || [];
+      setApiModels(nextModels);
+      if (nextModels.length && !nextModels.some((item) => item.name === apiSettings.model.trim())) {
+        updateApiSettings({ model: nextModels[0].name });
+      }
+      setApiModelStatus({
+        type: nextModels.length ? "success" : "error",
+        message: nextModels.length
+          ? `${nextModels.length} models loaded. Choose one from the dropdown.`
+          : "OpenAI returned no models for this key."
+      });
+    } catch (error) {
+      setApiModels([]);
+      setApiModelStatus({ type: "error", message: error.message });
+    } finally {
+      setIsLoadingApiModels(false);
+    }
   }
 
   function createAgent() {
@@ -257,7 +322,7 @@ function App() {
     setIsSending(true);
 
     try {
-      const response = await fetch("/api/chat", {
+      const response = await fetch(apiUrl("/api/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -269,15 +334,16 @@ function App() {
           apiKey: apiSettings.apiKey.trim()
         })
       });
-      const data = await response.json();
+      const data = await readApiJson(response, "The model did not respond.");
       if (!response.ok) throw new Error(data.message || "The model did not respond.");
       setMessages((current) => [...current, data]);
     } catch (error) {
+      const connectionName = provider === "api" ? "the configured AI API" : "Ollama";
       setMessages((current) => [
         ...current,
         {
           role: "assistant",
-          content: `I could not reach Ollama for this request. ${error.message}`
+          content: `I could not reach ${connectionName} for this request. ${error.message}`
         }
       ]);
     } finally {
@@ -369,35 +435,79 @@ function App() {
                   </button>
                 </>
               ) : (
-                <input
-                  value={apiSettings.model}
-                  onChange={(event) => updateApiSettings({ model: event.target.value })}
-                  placeholder="API model, e.g. gpt-4o-mini"
-                />
+                <>
+                  {apiModels.length ? (
+                    <select
+                      value={apiSettings.model}
+                      onChange={(event) => updateApiSettings({ model: event.target.value })}
+                    >
+                      {apiModels.map((item) => (
+                        <option key={item.name} value={item.name}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={apiSettings.model}
+                      onChange={(event) => updateApiSettings({ model: event.target.value })}
+                      placeholder="Load models or type one manually"
+                    />
+                  )}
+                  <button
+                    className="icon-button"
+                    disabled={!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim() || isLoadingApiModels}
+                    onClick={refreshApiModels}
+                    title="Load available models from OpenAI"
+                  >
+                    <RefreshCw size={17} />
+                  </button>
+                </>
               )}
             </div>
             {provider === "api" && (
-              <div className="api-settings">
-                <input
-                  value={apiSettings.baseUrl}
-                  onChange={(event) => updateApiSettings({ baseUrl: event.target.value })}
-                  placeholder="API base URL"
-                />
-                <input
-                  type="password"
-                  value={apiSettings.apiKey}
-                  onChange={(event) => updateApiSettings({ apiKey: event.target.value })}
-                  placeholder="API key"
-                />
-              </div>
+              <>
+                <div className="api-settings">
+                  <input
+                    value={apiSettings.baseUrl}
+                    onChange={(event) => updateApiSettings({ baseUrl: event.target.value })}
+                    placeholder="API base URL"
+                  />
+                  <input
+                    type="password"
+                    value={apiSettings.apiKey}
+                    onChange={(event) => updateApiSettings({ apiKey: event.target.value })}
+                    placeholder="API key"
+                  />
+                </div>
+                <p className={`api-model-status ${apiModelStatus.type}`}>
+                  {apiModelStatus.message || "Click refresh to load models available to this API key."}
+                </p>
+              </>
             )}
           </div>
-          <div className={`status-pill ${(provider === "api" && isApiReady) || health.ok ? "is-online" : ""}`}>
+          <div
+            className={`status-pill ${
+              provider === "api"
+                ? apiModelStatus.type === "success" || (isApiReady && apiModelStatus.type !== "error")
+                  ? "is-online"
+                  : ""
+                : health.ok
+                  ? "is-online"
+                  : ""
+            }`}
+          >
             <span />
             {provider === "api"
-              ? isApiReady
-                ? "API mode ready"
-                : "Add API URL, key, and model"
+              ? isLoadingApiModels
+                ? "Loading API models..."
+                : apiModelStatus.type === "error"
+                  ? "API model load failed"
+                  : apiModels.length
+                    ? `${apiModels.length} API models loaded`
+                    : isApiReady
+                      ? "API mode ready"
+                      : "Add API URL, key, and model"
               : health.ok
                 ? "Ollama ready"
                 : health.message}

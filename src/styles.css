@@ -325,6 +325,22 @@ h3 {
   margin-top: 8px;
 }
 
+.api-model-status {
+  max-width: 620px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.api-model-status.error {
+  color: #9f1f14;
+}
+
+.api-model-status.success {
+  color: var(--teal-dark);
+}
+
 select,
 input,
 textarea {
