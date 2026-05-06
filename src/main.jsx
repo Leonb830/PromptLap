@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle2,
   Copy,
+  FileText,
   FlaskConical,
   Gauge,
   Lightbulb,
@@ -70,6 +71,49 @@ const followUpIdeas = [
   "Give a better follow-up prompt I could have used."
 ];
 
+const promptTemplates = [
+  {
+    id: "socratic-tutor",
+    name: "Socratic Tutor",
+    category: "Learning",
+    goal: "Teach concepts by asking focused questions and adapting to the learner.",
+    systemPrompt:
+      "You are a patient Socratic tutor. Help the user learn by asking one focused question at a time before giving direct answers. Adapt to the learner's current understanding, correct misconceptions gently, and summarize progress after every three replies. Keep explanations clear, concrete, and encouraging."
+  },
+  {
+    id: "writing-coach",
+    name: "Writing Coach",
+    category: "Writing",
+    goal: "Improve drafts with concise, practical writing feedback.",
+    systemPrompt:
+      "You are a sharp but supportive writing coach. Help the user improve clarity, structure, tone, and precision. First identify the strongest part of the draft, then name the biggest improvement opportunity, then provide a revised version. Keep feedback specific and avoid rewriting more than needed."
+  },
+  {
+    id: "code-reviewer",
+    name: "Code Reviewer",
+    category: "Development",
+    goal: "Review code for bugs, risks, missing tests, and maintainability.",
+    systemPrompt:
+      "You are a senior code reviewer. Prioritize bugs, security risks, behavioral regressions, missing tests, and maintainability concerns. Give findings first, ordered by severity, with concrete file or function references when available. Keep style feedback secondary and suggest minimal, practical fixes."
+  },
+  {
+    id: "research-summarizer",
+    name: "Research Summarizer",
+    category: "Research",
+    goal: "Turn messy source material into concise summaries and open questions.",
+    systemPrompt:
+      "You are a careful research summarizer. Extract the key claims, supporting evidence, uncertainties, and useful follow-up questions from the user's material. Separate facts from interpretation, call out weak evidence, and end with a short summary that a busy reader can scan quickly."
+  },
+  {
+    id: "interview-practice",
+    name: "Interview Practice",
+    category: "Career",
+    goal: "Run realistic interview practice with feedback after each answer.",
+    systemPrompt:
+      "You are an interview practice partner. Ask one realistic interview question at a time, wait for the user's answer, then give concise feedback on clarity, specificity, and evidence. Suggest a stronger answer using the STAR format when helpful. Keep the tone calm and confidence-building."
+  }
+];
+
 const defaultApiSettings = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
@@ -101,6 +145,16 @@ function createDraft(agent) {
     name: agent?.name || "",
     goal: agent?.goal || "",
     systemPrompt: agent?.systemPrompt || ""
+  };
+}
+
+function agentFromTemplate(template) {
+  return {
+    id: crypto.randomUUID(),
+    name: template.name,
+    goal: template.goal,
+    systemPrompt: template.systemPrompt,
+    createdAt: Date.now()
   };
 }
 
@@ -250,6 +304,21 @@ function App() {
     setAgents((current) => [nextAgent, ...current]);
     setActiveId(nextAgent.id);
     setAgentDraft(createDraft(nextAgent));
+    setIsEditingAgent(true);
+    setMessages([]);
+  }
+
+  function createAgentFromTemplate(template) {
+    const nextAgent = agentFromTemplate(template);
+    setAgents((current) => [nextAgent, ...current]);
+    setActiveId(nextAgent.id);
+    setAgentDraft(createDraft(nextAgent));
+    setIsEditingAgent(true);
+    setMessages([]);
+  }
+
+  function applyTemplateToDraft(template) {
+    setAgentDraft(createDraft(template));
     setIsEditingAgent(true);
     setMessages([]);
   }
@@ -579,6 +648,34 @@ function App() {
                 spellCheck="true"
               />
             </label>
+
+            <div className="template-panel">
+              <div>
+                <p className="eyebrow">Prompt templates</p>
+                <h3>Start from a proven pattern</h3>
+              </div>
+              <div className="template-grid">
+                {promptTemplates.map((template) => (
+                  <article className="template-card" key={template.id}>
+                    <div>
+                      <span>{template.category}</span>
+                      <strong>{template.name}</strong>
+                      <p>{template.goal}</p>
+                    </div>
+                    <div className="template-actions">
+                      <button onClick={() => createAgentFromTemplate(template)} type="button">
+                        <Plus size={14} />
+                        New
+                      </button>
+                      <button onClick={() => applyTemplateToDraft(template)} type="button">
+                        <FileText size={14} />
+                        Apply
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
 
             <div className="score-panel">
               <div className="score-ring" style={{ "--score": `${promptScore.value * 100}%` }}>
