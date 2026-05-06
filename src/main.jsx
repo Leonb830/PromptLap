@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  BrainCircuit,
   Bot,
   CheckCircle2,
   Copy,
@@ -69,12 +70,26 @@ const followUpIdeas = [
   "Give a better follow-up prompt I could have used."
 ];
 
+const defaultApiSettings = {
+  baseUrl: "https://api.openai.com/v1",
+  apiKey: "",
+  model: "gpt-4o-mini"
+};
+
 function loadAgents() {
   try {
     const saved = JSON.parse(localStorage.getItem("prompt-lab-agents"));
     return Array.isArray(saved) && saved.length ? saved : starterAgents;
   } catch {
     return starterAgents;
+  }
+}
+
+function loadApiSettings() {
+  try {
+    return { ...defaultApiSettings, ...JSON.parse(localStorage.getItem("prompt-lab-api-settings")) };
+  } catch {
+    return defaultApiSettings;
   }
 }
 
@@ -99,6 +114,8 @@ function App() {
   const [activeId, setActiveId] = useState(() => loadAgents()[0]?.id || "coach");
   const [models, setModels] = useState([]);
   const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("ollama");
+  const [apiSettings, setApiSettings] = useState(loadApiSettings);
   const [health, setHealth] = useState({ ok: false, message: "Checking Ollama..." });
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
@@ -108,6 +125,8 @@ function App() {
   const [isSending, setIsSending] = useState(false);
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
+  const isApiReady =
+    Boolean(apiSettings.baseUrl.trim()) && Boolean(apiSettings.apiKey.trim()) && Boolean(apiSettings.model.trim());
 
   const promptScore = useMemo(() => {
     const passed = promptChecks.filter((check) => check.test(activeAgent?.systemPrompt || ""));
@@ -117,6 +136,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("prompt-lab-agents", JSON.stringify(agents));
   }, [agents]);
+
+  useEffect(() => {
+    localStorage.setItem("prompt-lab-api-settings", JSON.stringify(apiSettings));
+  }, [apiSettings]);
 
   useEffect(() => {
     refreshOllama();
@@ -144,6 +167,10 @@ function App() {
         message: "Ollama is not reachable. Start Ollama and pull a model before chatting."
       });
     }
+  }
+
+  function updateApiSettings(updates) {
+    setApiSettings((current) => ({ ...current, ...updates }));
   }
 
   function createAgent() {
@@ -221,7 +248,8 @@ function App() {
   async function sendMessage(event) {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || !activeAgent || !model || isSending) return;
+    const selectedModel = provider === "api" ? apiSettings.model.trim() : model;
+    if (!content || !activeAgent || !selectedModel || isSending) return;
 
     const nextMessages = [...messages, { role: "user", content }];
     setMessages(nextMessages);
@@ -233,9 +261,12 @@ function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
+          provider,
+          model: selectedModel,
           systemPrompt: activeAgent.systemPrompt,
-          messages: nextMessages
+          messages: nextMessages,
+          apiBaseUrl: apiSettings.baseUrl.trim(),
+          apiKey: apiSettings.apiKey.trim()
         })
       });
       const data = await response.json();
@@ -303,24 +334,73 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Local Ollama model</p>
-            <div className="model-row">
-              <select value={model} onChange={(event) => setModel(event.target.value)}>
-                <option value="">No model found</option>
-                {models.map((item) => (
-                  <option key={item.name} value={item.name}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-              <button className="icon-button" onClick={refreshOllama} title="Refresh Ollama">
-                <RefreshCw size={17} />
+            <p className="eyebrow">{provider === "ollama" ? "Local Ollama model" : "API model"}</p>
+            <div className="provider-toggle" aria-label="AI connection type">
+              <button
+                className={provider === "ollama" ? "is-active" : ""}
+                onClick={() => setProvider("ollama")}
+                type="button"
+              >
+                <Bot size={15} />
+                Ollama
+              </button>
+              <button
+                className={provider === "api" ? "is-active" : ""}
+                onClick={() => setProvider("api")}
+                type="button"
+              >
+                <BrainCircuit size={15} />
+                API
               </button>
             </div>
+            <div className="model-row">
+              {provider === "ollama" ? (
+                <>
+                  <select value={model} onChange={(event) => setModel(event.target.value)}>
+                    <option value="">No model found</option>
+                    {models.map((item) => (
+                      <option key={item.name} value={item.name}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="icon-button" onClick={refreshOllama} title="Refresh Ollama">
+                    <RefreshCw size={17} />
+                  </button>
+                </>
+              ) : (
+                <input
+                  value={apiSettings.model}
+                  onChange={(event) => updateApiSettings({ model: event.target.value })}
+                  placeholder="API model, e.g. gpt-4o-mini"
+                />
+              )}
+            </div>
+            {provider === "api" && (
+              <div className="api-settings">
+                <input
+                  value={apiSettings.baseUrl}
+                  onChange={(event) => updateApiSettings({ baseUrl: event.target.value })}
+                  placeholder="API base URL"
+                />
+                <input
+                  type="password"
+                  value={apiSettings.apiKey}
+                  onChange={(event) => updateApiSettings({ apiKey: event.target.value })}
+                  placeholder="API key"
+                />
+              </div>
+            )}
           </div>
-          <div className={`status-pill ${health.ok ? "is-online" : ""}`}>
+          <div className={`status-pill ${(provider === "api" && isApiReady) || health.ok ? "is-online" : ""}`}>
             <span />
-            {health.ok ? "Ollama ready" : health.message}
+            {provider === "api"
+              ? isApiReady
+                ? "API mode ready"
+                : "Add API URL, key, and model"
+              : health.ok
+                ? "Ollama ready"
+                : health.message}
           </div>
         </header>
 
@@ -446,7 +526,7 @@ function App() {
               {isSending && (
                 <article className="message assistant is-loading">
                   <span>{activeAgent.name}</span>
-                  <p>Thinking with {model}...</p>
+                  <p>Thinking with {provider === "api" ? apiSettings.model : model}...</p>
                 </article>
               )}
             </div>
@@ -466,7 +546,14 @@ function App() {
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="Write an initial task or a follow-up prompt..."
               />
-              <button disabled={!draft.trim() || !model || isSending}>
+              <button
+                disabled={
+                  !draft.trim() ||
+                  isSending ||
+                  (provider === "ollama" && !model) ||
+                  (provider === "api" && !isApiReady)
+                }
+              >
                 <Send size={18} />
                 Send
               </button>

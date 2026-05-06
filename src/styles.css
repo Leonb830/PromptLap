@@ -287,6 +287,42 @@ h3 {
 
 .model-row {
   gap: 8px;
+  margin-top: 8px;
+}
+
+.provider-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: #efe7d5;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.provider-toggle button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 0.84rem;
+  font-weight: 850;
+}
+
+.provider-toggle button.is-active {
+  color: var(--paper);
+  background: var(--teal);
+}
+
+.api-settings {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 0.8fr);
+  gap: 8px;
+  margin-top: 8px;
 }
 
 select,
@@ -635,6 +671,10 @@ label {
   .score-panel {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .api-settings {
+    grid-template-columns: 1fr;
   }
 
   .agent-list {

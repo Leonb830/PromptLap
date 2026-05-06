@@ -28,6 +28,33 @@ async function ollamaFetch(pathname, options = {}) {
   return response.json();
 }
 
+async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
+  const normalizedBaseUrl = apiBaseUrl.replace(/\/$/, "");
+  const response = await fetch(`${normalizedBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...messages.map(({ role, content }) => ({ role, content }))
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `AI API responded with ${response.status}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  return { role: "assistant", content };
+}
+
 app.get("/api/health", async (_request, response) => {
   try {
     await ollamaFetch("/api/tags");
@@ -57,14 +84,25 @@ app.get("/api/models", async (_request, response) => {
 });
 
 app.post("/api/chat", async (request, response) => {
-  const { model, systemPrompt, messages } = request.body || {};
+  const { provider = "ollama", model, systemPrompt, messages, apiBaseUrl, apiKey } = request.body || {};
 
   if (!model || !systemPrompt || !Array.isArray(messages)) {
     response.status(400).json({ message: "model, systemPrompt, and messages are required." });
     return;
   }
 
+  if (provider === "api" && (!apiBaseUrl || !apiKey)) {
+    response.status(400).json({ message: "apiBaseUrl and apiKey are required for API chat." });
+    return;
+  }
+
   try {
+    if (provider === "api") {
+      const data = await apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages });
+      response.json(data);
+      return;
+    }
+
     const data = await ollamaFetch("/api/chat", {
       method: "POST",
       body: JSON.stringify({

@@ -1,12 +1,11 @@
 # Prompt Lab
 
-A small local website for practicing AI prompting with Ollama. You can create minimal agents, edit their system prompts, and test follow-up prompts in a chat loop.
+A small local website for practicing AI prompting with Ollama or an OpenAI-compatible API. You can create minimal agents, edit their system prompts, and test follow-up prompts in a chat loop.
 
 ## Requirements
 
 - Node.js 20+
-- Ollama running locally
-- At least one pulled Ollama model
+- Ollama running locally with at least one pulled model, or an API key for an OpenAI-compatible chat API
 
 ## Run
 
@@ -29,10 +28,20 @@ Pull a model if the model menu is empty:
 ollama pull llama3.2
 ```
 
+## API Mode
+
+Switch the connection type from `Ollama` to `API` in the top bar, then enter:
+
+- API base URL, for example `https://api.openai.com/v1`
+- API key
+- Model name, for example `gpt-4o-mini`
+
+The backend sends requests to `{API base URL}/chat/completions`, so API mode works with providers that support the OpenAI chat completions shape. API settings are stored in this local browser's storage for convenience.
+
 ## What It Does
 
 - Creates lightweight agents with only a name, goal, and system prompt.
 - Saves agents in browser local storage.
 - Lists local Ollama models through the backend.
-- Sends the system prompt and chat history to Ollama for testing.
+- Sends the system prompt and chat history to Ollama or an OpenAI-compatible API for testing.
 - Shows simple prompt checks for role, outcome, behavior, and audience.
