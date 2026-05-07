@@ -115,9 +115,9 @@ const promptTemplates = [
 ];
 
 const defaultApiSettings = {
-  baseUrl: "https://api.openai.com/v1",
+  baseUrl: "https://openrouter.ai/api/v1",
   apiKey: "",
-  model: "gpt-5.5"
+  model: "openai/gpt-5.2-chat"
 };
 
 const apiBaseUrl =
@@ -126,7 +126,21 @@ const apiBaseUrl =
 function loadAgents() {
   try {
     const saved = JSON.parse(localStorage.getItem("prompt-lab-agents"));
-    return Array.isArray(saved) && saved.length ? saved : starterAgents;
+    const validAgents = Array.isArray(saved)
+      ? saved
+          .filter((agent) => agent && typeof agent === "object")
+          .map((agent, index) => ({
+            id: typeof agent.id === "string" && agent.id ? agent.id : `saved-agent-${index + 1}`,
+            name: typeof agent.name === "string" && agent.name.trim() ? agent.name : "Untitled agent",
+            goal: typeof agent.goal === "string" && agent.goal.trim() ? agent.goal : "No learning goal set.",
+            systemPrompt:
+              typeof agent.systemPrompt === "string" && agent.systemPrompt.trim()
+                ? agent.systemPrompt
+                : "You are a helpful assistant. Ask for missing context and answer clearly.",
+            createdAt: Number.isFinite(agent.createdAt) ? agent.createdAt : Date.now() + index
+          }))
+      : [];
+    return validAgents.length ? validAgents : starterAgents;
   } catch {
     return starterAgents;
   }
@@ -134,7 +148,21 @@ function loadAgents() {
 
 function loadApiSettings() {
   try {
-    return { ...defaultApiSettings, ...JSON.parse(localStorage.getItem("prompt-lab-api-settings")) };
+    const saved = JSON.parse(localStorage.getItem("prompt-lab-api-settings")) || {};
+    const settings = { ...defaultApiSettings, ...saved };
+    settings.baseUrl = typeof settings.baseUrl === "string" ? settings.baseUrl : defaultApiSettings.baseUrl;
+    settings.apiKey = typeof settings.apiKey === "string" ? settings.apiKey : "";
+    settings.model = typeof settings.model === "string" ? settings.model : defaultApiSettings.model;
+
+    if (settings.baseUrl === "https://api.openai.com/v1") {
+      settings.baseUrl = defaultApiSettings.baseUrl;
+    }
+
+    if (settings.model === "gpt-5.5") {
+      settings.model = defaultApiSettings.model;
+    }
+
+    return settings;
   } catch {
     return defaultApiSettings;
   }
@@ -248,10 +276,15 @@ function App() {
       ]);
       const healthData = await readApiJson(healthResponse, "Could not check Ollama health.");
       const modelsData = await readApiJson(modelsResponse, "Could not load Ollama models.");
+      const nextModels = modelsData.models || [];
       setHealth(healthData);
-      setModels(modelsData.models || []);
-      setModel((current) => current || modelsData.models?.[0]?.name || "");
+      setModels(nextModels);
+      setModel((current) =>
+        nextModels.some((item) => item.name === current) ? current : nextModels[0]?.name || ""
+      );
     } catch {
+      setModels([]);
+      setModel("");
       setHealth({
         ok: false,
         message: "Ollama is not reachable. Start Ollama and pull a model before chatting."
@@ -261,6 +294,9 @@ function App() {
 
   function updateApiSettings(updates) {
     setApiSettings((current) => ({ ...current, ...updates }));
+    if (Object.hasOwn(updates, "baseUrl") || Object.hasOwn(updates, "apiKey")) {
+      setApiModels([]);
+    }
     setApiModelStatus({ type: "idle", message: "" });
   }
 
@@ -287,7 +323,7 @@ function App() {
     if (!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim()) return;
 
     setIsLoadingApiModels(true);
-    setApiModelStatus({ type: "loading", message: "Loading models from OpenAI..." });
+    setApiModelStatus({ type: "loading", message: "Loading models from OpenRouter..." });
     try {
       const response = await fetch(apiUrl("/api/api-models"), {
         method: "POST",
@@ -308,7 +344,7 @@ function App() {
         type: nextModels.length ? "success" : "error",
         message: nextModels.length
           ? `${nextModels.length} models loaded. Choose one from the dropdown.`
-          : "OpenAI returned no models for this key."
+          : "OpenRouter returned no models for this key."
       });
     } catch (error) {
       setApiModels([]);
@@ -410,6 +446,13 @@ function App() {
   async function improvePrompt() {
     const selectedModel = provider === "api" ? apiSettings.model.trim() : model;
     if (!promptText.trim() || !selectedModel || isImprovingPrompt) return;
+    const apiPayload =
+      provider === "api"
+        ? {
+            apiBaseUrl: apiSettings.baseUrl.trim(),
+            apiKey: apiSettings.apiKey.trim()
+          }
+        : {};
 
     setIsImprovingPrompt(true);
     setSuggestionStatus({ type: "loading", message: "Thinking about this prompt..." });
@@ -422,8 +465,7 @@ function App() {
           provider,
           model: selectedModel,
           systemPrompt: promptText,
-          apiBaseUrl: apiSettings.baseUrl.trim(),
-          apiKey: apiSettings.apiKey.trim()
+          ...apiPayload
         })
       });
       const data = await readApiJson(response, "Could not improve this prompt.");
@@ -450,6 +492,13 @@ function App() {
     const content = draft.trim();
     const selectedModel = provider === "api" ? apiSettings.model.trim() : model;
     if (!content || !activeAgent || !selectedModel || isSending) return;
+    const apiPayload =
+      provider === "api"
+        ? {
+            apiBaseUrl: apiSettings.baseUrl.trim(),
+            apiKey: apiSettings.apiKey.trim()
+          }
+        : {};
 
     const nextMessages = [...messages, { role: "user", content }];
     setMessages(nextMessages);
@@ -465,8 +514,7 @@ function App() {
           model: selectedModel,
           systemPrompt: promptText,
           messages: nextMessages,
-          apiBaseUrl: apiSettings.baseUrl.trim(),
-          apiKey: apiSettings.apiKey.trim()
+          ...apiPayload
         })
       });
       const data = await readApiJson(response, "The model did not respond.");
@@ -593,7 +641,7 @@ function App() {
                     className="icon-button"
                     disabled={!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim() || isLoadingApiModels}
                     onClick={refreshApiModels}
-                    title="Load available models from OpenAI"
+                    title="Load available models from OpenRouter"
                   >
                     <RefreshCw size={17} />
                   </button>
@@ -606,7 +654,7 @@ function App() {
                   <input
                     value={apiSettings.baseUrl}
                     onChange={(event) => updateApiSettings({ baseUrl: event.target.value })}
-                    placeholder="API base URL"
+                    placeholder="OpenRouter API base URL"
                   />
                   <input
                     type="password"

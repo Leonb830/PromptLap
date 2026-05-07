@@ -1,11 +1,11 @@
 # Prompt Lab
 
-A small local website for practicing AI prompting with Ollama or an OpenAI-compatible API. You can create minimal agents, edit their system prompts, and test follow-up prompts in a chat loop.
+A small local website for practicing AI prompting with Ollama or OpenRouter. You can create minimal agents, edit their system prompts, and test follow-up prompts in a chat loop.
 
 ## Requirements
 
 - Node.js 20+
-- Ollama running locally with at least one pulled model, or an API key for an OpenAI-compatible chat API
+- Ollama running locally with at least one pulled model, or an OpenRouter API key
 
 Here is how to install node.js 'https://nodejs.org/en/download'
 
@@ -34,16 +34,16 @@ ollama pull llama3.2
 
 Switch the connection type from `Ollama` to `API` in the top bar, then enter:
 
-- API base URL, for example `https://api.openai.com/v1`
+- API base URL, for example `https://openrouter.ai/api/v1`
 - API key
-- Model name, for example `gpt-5.5`
+- Model name, for example `openai/gpt-5.2-chat`
 
-The backend uses the official OpenAI Node SDK. Chat requests go through the Responses API with `client.responses.create`, and the model refresh button uses `client.models.list` to show model IDs available to your key. Once models are loaded, the model field becomes a dropdown and automatically selects an available model if the saved one is invalid. API settings are stored in this local browser's storage for convenience.
+The backend uses the OpenAI Node SDK against OpenRouter's OpenAI-compatible API with `baseURL: "https://openrouter.ai/api/v1"`. Chat and prompt-improvement requests use `openai.chat.completions.create`, and the model refresh button uses `openai.models.list` so you do not need to hardcode a model. Once models are loaded, the model field becomes a dropdown and automatically selects an available model if the saved one is invalid. API settings are stored in this local browser's storage for convenience.
 
 ## What It Does
 
 - Creates lightweight agents with only a name, goal, and system prompt.
 - Saves agents in browser local storage.
 - Lists local Ollama models through the backend.
-- Sends the system prompt and chat history to Ollama or an OpenAI-compatible API for testing.
+- Sends the system prompt and chat history to Ollama or OpenRouter for testing.
 - Shows simple prompt checks for role, outcome, behavior, and audience.

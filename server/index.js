@@ -1,7 +1,7 @@
 import express from "express";
-import OpenAI from "openai";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import OpenAI from "openai";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -55,22 +55,70 @@ function normalizeErrorMessage(error) {
   }
 }
 
-async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
-  const client = new OpenAI({
+function isNonEmptyString(value) {
+  return typeof value === "string" && Boolean(value.trim());
+}
+
+function normalizeOpenRouterServerUrl(apiBaseUrl) {
+  const fallback = "https://openrouter.ai/api/v1";
+  const trimmed = typeof apiBaseUrl === "string" ? apiBaseUrl.trim() : "";
+
+  if (!trimmed) return fallback;
+
+  try {
+    const url = new URL(trimmed);
+    url.hash = "";
+    url.search = "";
+
+    if (url.hostname === "api.openai.com") {
+      return fallback;
+    }
+
+    url.pathname = url.pathname
+      .replace(/\/chat\/completions\/?$/, "")
+      .replace(/\/+$/, "");
+
+    if (
+      url.hostname.endsWith("openrouter.ai") &&
+      !url.pathname.endsWith("/api/v1")
+    ) {
+      url.pathname = "/api/v1";
+    }
+
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return fallback;
+  }
+}
+
+function openRouterClient({ apiBaseUrl, apiKey }) {
+  return new OpenAI({
     apiKey,
-    baseURL: apiBaseUrl.replace(/\/$/, ""),
+    baseURL: normalizeOpenRouterServerUrl(apiBaseUrl),
+    defaultHeaders: {
+      "HTTP-Referer": "http://localhost:5173",
+      "X-OpenRouter-Title": "Prompt Lab",
+    },
   });
+}
 
-  const response = await client.responses.create({
+async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
+  const openai = openRouterClient({ apiBaseUrl, apiKey });
+  const completion = await openai.chat.completions.create({
     model,
-    instructions: systemPrompt,
-    input: messages.map(({ role, content }) => ({
-      role: role === "assistant" ? "assistant" : "user",
-      content,
-    })),
+    messages: [
+      { role: "system", content: systemPrompt },
+      ...messages.map(({ role, content }) => ({
+        role: role === "assistant" ? "assistant" : "user",
+        content,
+      })),
+    ],
   });
 
-  return { role: "assistant", content: response.output_text || "" };
+  return {
+    role: "assistant",
+    content: completion.choices?.[0]?.message?.content || "",
+  };
 }
 
 function extractJsonBlock(text) {
@@ -126,20 +174,29 @@ function buildSuggestionPrompt(systemPrompt) {
   ].join("\n");
 }
 
-async function apiPromptSuggestions({ apiBaseUrl, apiKey, model, systemPrompt }) {
-  const client = new OpenAI({
-    apiKey,
-    baseURL: apiBaseUrl.replace(/\/$/, ""),
-  });
-
-  const response = await client.responses.create({
+async function apiPromptSuggestions({
+  apiBaseUrl,
+  apiKey,
+  model,
+  systemPrompt,
+}) {
+  const openai = openRouterClient({ apiBaseUrl, apiKey });
+  const completion = await openai.chat.completions.create({
     model,
-    instructions:
-      "You are a prompt engineering reviewer. Return only valid JSON that matches the requested schema.",
-    input: buildSuggestionPrompt(systemPrompt),
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a prompt engineering reviewer. Return only valid JSON that matches the requested schema.",
+      },
+      {
+        role: "user",
+        content: buildSuggestionPrompt(systemPrompt),
+      },
+    ],
   });
 
-  return parseSuggestionResponse(response.output_text || "");
+  return parseSuggestionResponse(completion.choices?.[0]?.message?.content || "");
 }
 
 async function ollamaPromptSuggestions({ model, systemPrompt }) {
@@ -166,17 +223,10 @@ async function ollamaPromptSuggestions({ model, systemPrompt }) {
 }
 
 async function apiModels({ apiBaseUrl, apiKey }) {
-  const client = new OpenAI({
-    apiKey,
-    baseURL: apiBaseUrl.replace(/\/$/, ""),
-  });
+  const openai = openRouterClient({ apiBaseUrl, apiKey });
+  const models = await openai.models.list();
 
-  const models = [];
-  for await (const model of client.models.list()) {
-    models.push(model);
-  }
-
-  return models
+  return Array.from(models.data || [])
     .map((model) => ({ name: model.id }))
     .filter((model) => model.name)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -214,10 +264,10 @@ app.get("/api/models", async (_request, response) => {
 app.post("/api/api-models", async (request, response) => {
   const { apiBaseUrl, apiKey } = request.body || {};
 
-  if (!apiBaseUrl || !apiKey) {
-    response
-      .status(400)
-      .json({ message: "apiBaseUrl and apiKey are required to list API models." });
+  if (!isNonEmptyString(apiBaseUrl) || !isNonEmptyString(apiKey)) {
+    response.status(400).json({
+      message: "apiBaseUrl and apiKey are required to list API models.",
+    });
     return;
   }
 
@@ -229,25 +279,28 @@ app.post("/api/api-models", async (request, response) => {
 });
 
 app.post("/api/chat", async (request, response) => {
-  const {
-    provider = "ollama",
-    model,
-    systemPrompt,
-    messages,
-    apiBaseUrl,
-    apiKey,
-  } = request.body || {};
+  const { provider, model, systemPrompt, messages, apiBaseUrl, apiKey } =
+    request.body || {};
   const effectiveProvider =
-    provider === "api" || apiBaseUrl || apiKey ? "api" : "ollama";
+    provider === "api" || (!provider && (apiBaseUrl || apiKey))
+      ? "api"
+      : "ollama";
 
-  if (!model || !systemPrompt || !Array.isArray(messages)) {
+  if (
+    !isNonEmptyString(model) ||
+    !isNonEmptyString(systemPrompt) ||
+    !Array.isArray(messages)
+  ) {
     response
       .status(400)
       .json({ message: "model, systemPrompt, and messages are required." });
     return;
   }
 
-  if (effectiveProvider === "api" && (!apiBaseUrl || !apiKey)) {
+  if (
+    effectiveProvider === "api" &&
+    (!isNonEmptyString(apiBaseUrl) || !isNonEmptyString(apiKey))
+  ) {
     response
       .status(400)
       .json({ message: "apiBaseUrl and apiKey are required for API chat." });
@@ -289,34 +342,36 @@ app.post("/api/chat", async (request, response) => {
 });
 
 app.post("/api/prompt-suggestions", async (request, response) => {
-  const {
-    provider = "ollama",
-    model,
-    systemPrompt,
-    apiBaseUrl,
-    apiKey,
-  } = request.body || {};
+  const { provider, model, systemPrompt, apiBaseUrl, apiKey } =
+    request.body || {};
   const effectiveProvider =
-    provider === "api" || apiBaseUrl || apiKey ? "api" : "ollama";
+    provider === "api" || (!provider && (apiBaseUrl || apiKey))
+      ? "api"
+      : "ollama";
 
-  if (!model || !systemPrompt) {
-    response
-      .status(400)
-      .json({ message: "model and systemPrompt are required to improve the prompt." });
+  if (!isNonEmptyString(model) || !isNonEmptyString(systemPrompt)) {
+    response.status(400).json({
+      message: "model and systemPrompt are required to improve the prompt.",
+    });
     return;
   }
 
-  if (effectiveProvider === "api" && (!apiBaseUrl || !apiKey)) {
-    response
-      .status(400)
-      .json({ message: "apiBaseUrl and apiKey are required for API suggestions." });
+  if (effectiveProvider === "api" && (!isNonEmptyString(apiBaseUrl) || !isNonEmptyString(apiKey))) {
+    response.status(400).json({
+      message: "apiBaseUrl and apiKey are required for API suggestions.",
+    });
     return;
   }
 
   try {
     const suggestions =
       effectiveProvider === "api"
-        ? await apiPromptSuggestions({ apiBaseUrl, apiKey, model, systemPrompt })
+        ? await apiPromptSuggestions({
+            apiBaseUrl,
+            apiKey,
+            model,
+            systemPrompt,
+          })
         : await ollamaPromptSuggestions({ model, systemPrompt });
 
     response.json({ suggestions });
@@ -332,6 +387,11 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Prompt Lab API listening on http://localhost:${port}`);
+});
+
+server.on("error", (error) => {
+  console.error("Prompt Lab API failed to start:", error);
+  process.exit(1);
 });
