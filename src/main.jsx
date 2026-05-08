@@ -41,28 +41,357 @@ const starterAgents = [
   }
 ];
 
-const promptChecks = [
+const promptRubric = [
   {
-    label: "Role",
-    test: (text) => /\byou are\b|\bact as\b|\brole\b/i.test(text),
-    hint: "Name the agent's role."
+    id: "role",
+    label: "Role clarity",
+    max: 10,
+    suggestion: "Name the role and the domain it specializes in.",
+    evaluate: ({ text }) => {
+      const hasRole = hasPattern(text, [/\byou are\b/i, /\bact as\b/i, /\byour role\b/i, /\bspecialist\b/i]);
+      const hasDomain = hasPattern(text, [
+        /\bcoach\b/i,
+        /\btutor\b/i,
+        /\breviewer\b/i,
+        /\bsummarizer\b/i,
+        /\bpartner\b/i,
+        /\bexpert\b/i,
+        /\bsenior\b/i
+      ]);
+      const score = hasRole && hasDomain ? 10 : hasRole ? 7 : hasDomain ? 5 : 0;
+      return {
+        score,
+        detail:
+          score >= 10
+            ? "Role and specialty are explicit."
+            : score
+              ? "Role is partly clear; add a sharper specialty."
+              : "The assistant's role is not yet clear."
+      };
+    }
   },
   {
+    id: "outcome",
     label: "Outcome",
-    test: (text) => /\bhelp\b|\bcreate\b|\bteach\b|\bwrite\b|\banswer\b|\bimprove\b/i.test(text),
-    hint: "Say what success looks like."
+    max: 12,
+    suggestion: "Describe the concrete result the agent should produce.",
+    evaluate: ({ text }) => {
+      const outcomeSignals = countPatternMatches(text, [
+        /\bhelp\b/i,
+        /\bcreate\b/i,
+        /\bteach\b/i,
+        /\bwrite\b/i,
+        /\banswer\b/i,
+        /\bimprove\b/i,
+        /\bextract\b/i,
+        /\breview\b/i,
+        /\bproduce\b/i,
+        /\bdeliver\b/i
+      ]);
+      const successSignals = hasPattern(text, [/\bsuccess\b/i, /\bgoal\b/i, /\boutcome\b/i, /\bresult\b/i]);
+      const score = clampScore(outcomeSignals * 4 + (successSignals ? 4 : 0), 12);
+      return {
+        score,
+        detail:
+          score >= 10
+            ? "Desired result is concrete."
+            : score
+              ? "Outcome is present; make success more measurable."
+              : "Add the result this agent should produce."
+      };
+    }
   },
   {
-    label: "Behavior",
-    test: (text) => /\bconcise\b|\bstep\b|\bask\b|\bdo not\b|\balways\b|\bwhen\b/i.test(text),
-    hint: "Add behavior rules or boundaries."
+    id: "audience",
+    label: "Audience fit",
+    max: 10,
+    suggestion: "Mention who the agent serves and how to adapt to them.",
+    evaluate: ({ text }) => {
+      const hasAudience = hasPattern(text, [
+        /\buser\b/i,
+        /\blearner\b/i,
+        /\bbeginner\b/i,
+        /\bexpert\b/i,
+        /\bdeveloper\b/i,
+        /\breader\b/i,
+        /\bstudent\b/i,
+        /\bteam\b/i,
+        /\bclient\b/i
+      ]);
+      const hasAdaptation = hasPattern(text, [/\badapt\b/i, /\blevel\b/i, /\btone\b/i, /\bneeds\b/i, /\bcontext\b/i]);
+      const score = hasAudience && hasAdaptation ? 10 : hasAudience ? 7 : hasAdaptation ? 4 : 0;
+      return {
+        score,
+        detail:
+          score >= 10
+            ? "Audience and adaptation are covered."
+            : score
+              ? "Audience is hinted at; add how the agent should adapt."
+              : "Name the audience this prompt is for."
+      };
+    }
   },
   {
-    label: "Audience",
-    test: (text) => /\buser\b|\blearner\b|\bbeginner\b|\bexpert\b|\bdeveloper\b|\breader\b/i.test(text),
-    hint: "Mention who it serves."
+    id: "behavior",
+    label: "Behavior rules",
+    max: 12,
+    suggestion: "Add specific rules for how the agent should respond.",
+    evaluate: ({ text }) => {
+      const behaviorSignals = countPatternMatches(text, [
+        /\bconcise\b/i,
+        /\bstep[- ]?by[- ]?step\b/i,
+        /\bask\b/i,
+        /\bwait\b/i,
+        /\bsummarize\b/i,
+        /\bprioritize\b/i,
+        /\bexplain\b/i,
+        /\bkeep\b/i,
+        /\bfirst\b/i,
+        /\bthen\b/i
+      ]);
+      const ruleSignals = countPatternMatches(text, [/\balways\b/i, /\bnever\b/i, /\bdo not\b/i, /\bwhen\b/i]);
+      const score = clampScore(behaviorSignals * 2 + ruleSignals * 3, 12);
+      return {
+        score,
+        detail:
+          score >= 10
+            ? "Response behavior is well directed."
+            : score
+              ? "Some behavior guidance is present; add clearer rules."
+              : "Tell the agent how to behave in replies."
+      };
+    }
+  },
+  {
+    id: "constraints",
+    label: "Boundaries",
+    max: 12,
+    suggestion: "Set limits, exclusions, or refusal behavior.",
+    evaluate: ({ text }) => {
+      const constraintSignals = countPatternMatches(text, [
+        /\bdo not\b/i,
+        /\bdon't\b/i,
+        /\bavoid\b/i,
+        /\bunless\b/i,
+        /\bonly\b/i,
+        /\bmust\b/i,
+        /\bshould not\b/i,
+        /\bwithout\b/i
+      ]);
+      const safetySignals = hasPattern(text, [/\brefuse\b/i, /\bdecline\b/i, /\bunsafe\b/i, /\bprivate\b/i, /\bsensitive\b/i]);
+      const score = clampScore(constraintSignals * 3 + (safetySignals ? 3 : 0), 12);
+      return {
+        score,
+        detail:
+          score >= 10
+            ? "Limits and boundaries are clear."
+            : score
+              ? "Some limits exist; add edge cases or refusal rules."
+              : "Add boundaries for what the agent should avoid."
+      };
+    }
+  },
+  {
+    id: "format",
+    label: "Output format",
+    max: 10,
+    suggestion: "Specify the structure, length, or format of the answer.",
+    evaluate: ({ text, structureCount }) => {
+      const formatSignals = countPatternMatches(text, [
+        /\bformat\b/i,
+        /\bstructure\b/i,
+        /\bbullets?\b/i,
+        /\btable\b/i,
+        /\bjson\b/i,
+        /\bmarkdown\b/i,
+        /\bsections?\b/i,
+        /\blist\b/i,
+        /\btemplate\b/i
+      ]);
+      const lengthSignals = hasPattern(text, [/\bconcise\b/i, /\bshort\b/i, /\bbrief\b/i, /\b\d+\s+(sentences|paragraphs|bullets)\b/i]);
+      const score = clampScore(formatSignals * 3 + structureCount * 2 + (lengthSignals ? 2 : 0), 10);
+      return {
+        score,
+        detail:
+          score >= 8
+            ? "Output shape is defined."
+            : score
+              ? "Format is partly defined; add a clearer answer shape."
+              : "Add formatting or length expectations."
+      };
+    }
+  },
+  {
+    id: "examples",
+    label: "Examples",
+    max: 10,
+    suggestion: "Include a sample input, output, or pattern to imitate.",
+    evaluate: ({ text }) => {
+      const hasExample = hasPattern(text, [/\bexample\b/i, /\bfor example\b/i, /\be\.g\.\b/i, /\bsample\b/i]);
+      const hasInputOutput = hasPattern(text, [/\binput\b/i, /\boutput\b/i, /\bbefore\b/i, /\bafter\b/i]);
+      const score = hasExample && hasInputOutput ? 10 : hasExample ? 7 : hasInputOutput ? 5 : 0;
+      return {
+        score,
+        detail:
+          score >= 10
+            ? "Examples make the expected pattern concrete."
+            : score
+              ? "Example cues are present; add input/output detail."
+              : "No example pattern is included."
+      };
+    }
+  },
+  {
+    id: "context",
+    label: "Context use",
+    max: 8,
+    suggestion: "Tell the agent what context to ask for or rely on.",
+    evaluate: ({ text }) => {
+      const contextSignals = countPatternMatches(text, [
+        /\bcontext\b/i,
+        /\bassumptions?\b/i,
+        /\bmissing\b/i,
+        /\bclarifying questions?\b/i,
+        /\bbased on\b/i,
+        /\bgiven\b/i,
+        /\bprovided\b/i
+      ]);
+      const score = clampScore(contextSignals * 3, 8);
+      return {
+        score,
+        detail:
+          score >= 7
+            ? "Context handling is explicit."
+            : score
+              ? "Some context handling exists; make it more actionable."
+              : "Tell the agent how to handle missing context."
+      };
+    }
+  },
+  {
+    id: "uncertainty",
+    label: "Uncertainty",
+    max: 8,
+    suggestion: "Explain what to do when information is missing or uncertain.",
+    evaluate: ({ text }) => {
+      const uncertaintySignals = countPatternMatches(text, [
+        /\buncertain\b/i,
+        /\bunknown\b/i,
+        /\bunsure\b/i,
+        /\bassumption\b/i,
+        /\bask\b/i,
+        /\bclarify\b/i,
+        /\bdo not invent\b/i,
+        /\bdon't invent\b/i
+      ]);
+      const score = clampScore(uncertaintySignals * 3, 8);
+      return {
+        score,
+        detail:
+          score >= 7
+            ? "Uncertainty behavior is covered."
+            : score
+              ? "Uncertainty is hinted at; add a stronger rule."
+              : "Add guidance for uncertainty and missing facts."
+      };
+    }
+  },
+  {
+    id: "evaluation",
+    label: "Quality bar",
+    max: 8,
+    suggestion: "Define how the agent should judge a good answer.",
+    evaluate: ({ text }) => {
+      const qualitySignals = countPatternMatches(text, [
+        /\bquality\b/i,
+        /\bcriteria\b/i,
+        /\bcheck\b/i,
+        /\bverify\b/i,
+        /\baccurate\b/i,
+        /\bspecific\b/i,
+        /\bclear\b/i,
+        /\bpractical\b/i,
+        /\bevidence\b/i
+      ]);
+      const score = clampScore(qualitySignals * 2, 8);
+      return {
+        score,
+        detail:
+          score >= 7
+            ? "Quality expectations are clear."
+            : score
+              ? "Some quality language exists; add evaluation criteria."
+              : "Add criteria for what makes a good response."
+      };
+    }
   }
 ];
+
+function hasPattern(text, patterns) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function countPatternMatches(text, patterns) {
+  return patterns.reduce((total, pattern) => total + (pattern.test(text) ? 1 : 0), 0);
+}
+
+function clampScore(value, max) {
+  return Math.max(0, Math.min(max, value));
+}
+
+function analyzePrompt(text) {
+  const trimmed = text.trim();
+  return {
+    text,
+    wordCount: trimmed ? trimmed.split(/\s+/).length : 0,
+    structureCount: (text.match(/(^|\n)\s*(?:[-*]|\d+\.|[A-Z][A-Za-z ]{2,24}:)/g) || []).length
+  };
+}
+
+function scorePrompt(text) {
+  const analysis = analyzePrompt(text);
+  const items = promptRubric.map((criterion) => {
+    const result = criterion.evaluate(analysis);
+    const score = clampScore(result.score, criterion.max);
+    const ratio = criterion.max ? score / criterion.max : 0;
+
+    return {
+      ...criterion,
+      score,
+      detail: result.detail,
+      status: ratio >= 0.75 ? "strong" : ratio >= 0.4 ? "partial" : "missing"
+    };
+  });
+  const score = items.reduce((total, item) => total + item.score, 0);
+  const maxScore = items.reduce((total, item) => total + item.max, 0);
+  const percent = Math.round((score / maxScore) * 100);
+  const missingItems = items.filter((item) => item.status !== "strong");
+  const topSuggestion = missingItems.sort((a, b) => a.score / a.max - b.score / b.max)[0];
+
+  return {
+    items,
+    score,
+    maxScore,
+    percent,
+    value: score / maxScore,
+    level: promptScoreLevel(percent),
+    summary: promptScoreSummary(percent, analysis.wordCount, topSuggestion)
+  };
+}
+
+function promptScoreLevel(percent) {
+  if (percent >= 85) return "Strong";
+  if (percent >= 65) return "Solid";
+  if (percent >= 40) return "Needs focus";
+  return "Early draft";
+}
+
+function promptScoreSummary(percent, wordCount, topSuggestion) {
+  if (wordCount === 0) return "Start by naming the role, result, and audience.";
+  if (percent >= 85) return "This prompt has clear guidance across most scoring areas.";
+  if (topSuggestion) return topSuggestion.suggestion;
+  return "Add one more concrete instruction to sharpen this prompt.";
+}
 
 const followUpIdeas = [
   "Rewrite your last answer for a beginner.",
@@ -273,6 +602,7 @@ function App() {
   const [isEditingAgent, setIsEditingAgent] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [isScoreModalOpen, setIsScoreModalOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isLoadingApiModels, setIsLoadingApiModels] = useState(false);
   const [apiModelStatus, setApiModelStatus] = useState({ type: "idle", message: "" });
@@ -287,8 +617,7 @@ function App() {
   const promptText = isEditingAgent ? agentDraft.systemPrompt : activeAgent?.systemPrompt || "";
 
   const promptScore = useMemo(() => {
-    const passed = promptChecks.filter((check) => check.test(promptText));
-    return { passed, total: promptChecks.length, value: passed.length / promptChecks.length };
+    return scorePrompt(promptText);
   }, [promptText]);
 
   useEffect(() => {
@@ -910,22 +1239,23 @@ function App() {
               <div className="score-ring" style={{ "--score": `${promptScore.value * 100}%` }}>
                 <Gauge size={24} />
                 <strong>
-                  {promptScore.passed.length}/{promptScore.total}
+                  {promptScore.percent}
                 </strong>
+                <small>/100</small>
               </div>
-              <div>
-                <h3>Prompt shape</h3>
-                <div className="check-grid">
-                  {promptChecks.map((check) => {
-                    const passed = check.test(promptText);
-                    return (
-                      <span className={passed ? "check is-passed" : "check"} key={check.label}>
-                        {passed ? <CheckCircle2 size={15} /> : <Lightbulb size={15} />}
-                        {passed ? check.label : check.hint}
-                      </span>
-                    );
-                  })}
+              <div className="score-body">
+                <div className="score-heading">
+                  <div>
+                    <h3>Prompt score</h3>
+                    <p>{promptScore.level}</p>
+                  </div>
+                  <strong>{Math.round(promptScore.score)}/{promptScore.maxScore}</strong>
                 </div>
+                <p className="score-summary">{promptScore.summary}</p>
+                <button className="rubric-trigger" onClick={() => setIsScoreModalOpen(true)} type="button">
+                  <Gauge size={16} />
+                  View rubric
+                </button>
               </div>
             </div>
           </section>
@@ -1047,6 +1377,60 @@ function App() {
                   </div>
                 </article>
               ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {isScoreModalOpen && (
+        <div className="template-modal-backdrop" onClick={() => setIsScoreModalOpen(false)} role="presentation">
+          <section
+            className="template-modal score-modal"
+            aria-labelledby="score-modal-title"
+            aria-modal="true"
+            role="dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="template-modal-head">
+              <div>
+                <p className="eyebrow">Prompt scoring</p>
+                <h2 id="score-modal-title">Rubric details</h2>
+              </div>
+              <button className="icon-button" onClick={() => setIsScoreModalOpen(false)} title="Close rubric">
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="score-modal-summary">
+              <div className="score-ring" style={{ "--score": `${promptScore.value * 100}%` }}>
+                <Gauge size={24} />
+                <strong>{promptScore.percent}</strong>
+                <small>/100</small>
+              </div>
+              <div>
+                <h3>{promptScore.level}</h3>
+                <p>{promptScore.summary}</p>
+              </div>
+              <strong>{Math.round(promptScore.score)}/{promptScore.maxScore}</strong>
+            </div>
+
+            <div className="score-list">
+              {promptScore.items.map((item) => {
+                const scorePercent = `${(item.score / item.max) * 100}%`;
+                return (
+                  <article className={`score-check is-${item.status}`} key={item.id}>
+                    <div className="score-check-title">
+                      {item.status === "strong" ? <CheckCircle2 size={15} /> : <Lightbulb size={15} />}
+                      <strong>{item.label}</strong>
+                      <span>{Math.round(item.score)}/{item.max}</span>
+                    </div>
+                    <p>{item.detail}</p>
+                    <div className="score-check-bar" aria-hidden="true">
+                      <span style={{ "--score": scorePercent }} />
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </section>
         </div>

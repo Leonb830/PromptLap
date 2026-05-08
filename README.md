@@ -46,4 +46,4 @@ The backend uses the OpenAI Node SDK against OpenRouter's OpenAI-compatible API 
 - Saves agents in browser local storage.
 - Lists local Ollama models through the backend.
 - Streams the system prompt and chat history to Ollama or OpenRouter for testing.
-- Shows simple prompt checks for role, outcome, behavior, and audience.
+- Scores prompts with a weighted rubric for role, outcome, audience, boundaries, format, examples, context, uncertainty, and quality criteria.
