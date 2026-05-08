@@ -617,6 +617,12 @@ label {
   }
 }
 
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .template-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -832,6 +838,18 @@ label {
 
 .message.is-loading {
   color: var(--muted);
+}
+
+.message.is-streaming p::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.18em;
+  background: currentColor;
+  border-radius: 2px;
+  animation: cursor-blink 1s steps(2, start) infinite;
 }
 
 .idea-strip {

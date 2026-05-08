@@ -121,6 +121,126 @@ async function apiChat({ apiBaseUrl, apiKey, model, systemPrompt, messages }) {
   };
 }
 
+function streamChatMessages({ systemPrompt, messages }) {
+  return [
+    { role: "system", content: systemPrompt },
+    ...messages.map(({ role, content }) => ({
+      role: role === "assistant" ? "assistant" : "user",
+      content,
+    })),
+  ];
+}
+
+function startJsonLineStream(response) {
+  response.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+}
+
+function writeStreamEvent(response, event) {
+  if (response.destroyed || response.writableEnded) return;
+  response.write(`${JSON.stringify(event)}\n`);
+}
+
+function createResponseAbortSignal(response) {
+  const controller = new AbortController();
+  response.on("close", () => controller.abort());
+  return controller.signal;
+}
+
+async function apiChatStream({
+  apiBaseUrl,
+  apiKey,
+  model,
+  systemPrompt,
+  messages,
+  signal,
+}, response) {
+  const openai = openRouterClient({ apiBaseUrl, apiKey });
+  const stream = await openai.chat.completions.create(
+    {
+      model,
+      stream: true,
+      messages: streamChatMessages({ systemPrompt, messages }),
+    },
+    { signal },
+  );
+
+  for await (const chunk of stream) {
+    const content = chunk.choices?.[0]?.delta?.content;
+    if (typeof content === "string" && content) {
+      writeStreamEvent(response, { type: "token", content });
+    }
+  }
+}
+
+function readOllamaStreamLine(line) {
+  const data = JSON.parse(line);
+
+  if (data.error) {
+    throw new Error(data.error);
+  }
+
+  return data.message?.content || "";
+}
+
+async function ollamaChatStream({ model, systemPrompt, messages, signal }, response) {
+  const upstream = await fetch(`${ollamaBaseUrl}/api/chat`, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      stream: true,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...messages.map(({ role, content }) => ({ role, content })),
+      ],
+    }),
+  });
+
+  if (!upstream.ok) {
+    const detail = await upstream.text();
+    throw new Error(detail || `Ollama responded with ${upstream.status}`);
+  }
+
+  if (!upstream.body) {
+    throw new Error("Ollama did not return a readable stream.");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for await (const chunk of upstream.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+
+      if (line) {
+        const content = readOllamaStreamLine(line);
+        if (content) writeStreamEvent(response, { type: "token", content });
+      }
+
+      newlineIndex = buffer.indexOf("\n");
+    }
+  }
+
+  buffer += decoder.decode();
+  const finalLine = buffer.trim();
+  if (finalLine) {
+    const content = readOllamaStreamLine(finalLine);
+    if (content) writeStreamEvent(response, { type: "token", content });
+  }
+}
+
 function extractJsonBlock(text) {
   const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fencedMatch ? fencedMatch[1] : text;
@@ -279,7 +399,7 @@ app.post("/api/api-models", async (request, response) => {
 });
 
 app.post("/api/chat", async (request, response) => {
-  const { provider, model, systemPrompt, messages, apiBaseUrl, apiKey } =
+  const { provider, model, systemPrompt, messages, apiBaseUrl, apiKey, stream } =
     request.body || {};
   const effectiveProvider =
     provider === "api" || (!provider && (apiBaseUrl || apiKey))
@@ -308,6 +428,39 @@ app.post("/api/chat", async (request, response) => {
   }
 
   try {
+    if (stream) {
+      const signal = createResponseAbortSignal(response);
+      startJsonLineStream(response);
+
+      try {
+        if (effectiveProvider === "api") {
+          await apiChatStream({
+            apiBaseUrl,
+            apiKey,
+            model,
+            systemPrompt,
+            messages,
+            signal,
+          }, response);
+        } else {
+          await ollamaChatStream({ model, systemPrompt, messages, signal }, response);
+        }
+
+        writeStreamEvent(response, { type: "done" });
+      } catch (error) {
+        writeStreamEvent(response, {
+          type: "error",
+          message: normalizeErrorMessage(error),
+        });
+      } finally {
+        if (!response.destroyed && !response.writableEnded) {
+          response.end();
+        }
+      }
+
+      return;
+    }
+
     if (effectiveProvider === "api") {
       const data = await apiChat({
         apiBaseUrl,

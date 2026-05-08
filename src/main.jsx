@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BrainCircuit,
@@ -217,6 +217,47 @@ function apiUrl(path) {
   return `${apiBaseUrl}${path}`;
 }
 
+async function readChatStream(response, onToken) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("This browser could not read the streamed model response.");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  async function readLine(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    const event = JSON.parse(trimmed);
+    if (event.type === "token") {
+      onToken(event.content || "");
+      return;
+    }
+
+    if (event.type === "error") {
+      throw new Error(event.message || "The streamed model response failed.");
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      await readLine(line);
+    }
+  }
+
+  buffer += decoder.decode();
+  await readLine(buffer);
+}
+
 function App() {
   const [agents, setAgents] = useState(loadAgents);
   const [activeId, setActiveId] = useState(() => loadAgents()[0]?.id || "coach");
@@ -238,6 +279,7 @@ function App() {
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [isImprovingPrompt, setIsImprovingPrompt] = useState(false);
   const [suggestionStatus, setSuggestionStatus] = useState({ type: "idle", message: "" });
+  const streamControllerRef = useRef(null);
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
   const isApiReady =
@@ -319,6 +361,11 @@ function App() {
     setIsEditingAgent(true);
   }
 
+  function clearMessages() {
+    streamControllerRef.current?.abort();
+    setMessages([]);
+  }
+
   async function refreshApiModels() {
     if (!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim()) return;
 
@@ -367,7 +414,7 @@ function App() {
     setActiveId(nextAgent.id);
     setAgentDraft(createDraft(nextAgent));
     setIsEditingAgent(true);
-    setMessages([]);
+    clearMessages();
   }
 
   function createAgentFromTemplate(template) {
@@ -377,14 +424,14 @@ function App() {
     setAgentDraft(createDraft(nextAgent));
     setIsEditingAgent(true);
     setIsTemplateModalOpen(false);
-    setMessages([]);
+    clearMessages();
   }
 
   function applyTemplateToDraft(template) {
     setAgentDraft(createDraft(template));
     setIsEditingAgent(true);
     setIsTemplateModalOpen(false);
-    setMessages([]);
+    clearMessages();
   }
 
   function deleteAgent(id) {
@@ -397,13 +444,13 @@ function App() {
     setAgents(remaining);
     setActiveId(remaining[0].id);
     setIsEditingAgent(false);
-    setMessages([]);
+    clearMessages();
   }
 
   function selectAgent(id) {
     setActiveId(id);
     setIsEditingAgent(false);
-    setMessages([]);
+    clearMessages();
   }
 
   function startEditingAgent() {
@@ -431,7 +478,7 @@ function App() {
       current.map((agent) => (agent.id === activeAgent.id ? { ...agent, ...updates } : agent))
     );
     setIsEditingAgent(false);
-    setMessages([]);
+    clearMessages();
   }
 
   function duplicatePrompt() {
@@ -439,8 +486,12 @@ function App() {
   }
 
   function resetChat() {
-    setMessages([]);
+    clearMessages();
     setDraft("");
+  }
+
+  function stopStreaming() {
+    streamControllerRef.current?.abort();
   }
 
   async function improvePrompt() {
@@ -500,36 +551,74 @@ function App() {
           }
         : {};
 
-    const nextMessages = [...messages, { role: "user", content }];
-    setMessages(nextMessages);
+    const nextMessages = [...messages, { id: crypto.randomUUID(), role: "user", content }];
+    const assistantMessageId = crypto.randomUUID();
+    let streamedContent = "";
+
+    setMessages([
+      ...nextMessages,
+      { id: assistantMessageId, role: "assistant", content: "", isStreaming: true }
+    ]);
     setDraft("");
     setIsSending(true);
+
+    const controller = new AbortController();
+    streamControllerRef.current = controller;
+
+    function updateStreamingMessage(updates) {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantMessageId ? { ...message, ...updates } : message
+        )
+      );
+    }
 
     try {
       const response = await fetch(apiUrl("/api/chat"), {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider,
           model: selectedModel,
           systemPrompt: promptText,
           messages: nextMessages,
+          stream: true,
           ...apiPayload
         })
       });
-      const data = await readApiJson(response, "The model did not respond.");
-      if (!response.ok) throw new Error(data.message || "The model did not respond.");
-      setMessages((current) => [...current, data]);
+
+      if (!response.ok) {
+        const data = await readApiJson(response, "The model did not respond.");
+        throw new Error(data.message || "The model did not respond.");
+      }
+
+      await readChatStream(response, (token) => {
+        streamedContent += token;
+        updateStreamingMessage({ content: streamedContent });
+      });
+
+      updateStreamingMessage({
+        content: streamedContent || "The model finished without returning text.",
+        isStreaming: false
+      });
     } catch (error) {
       const connectionName = provider === "api" ? "the configured AI API" : "Ollama";
-      setMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: `I could not reach ${connectionName} for this request. ${error.message}`
-        }
-      ]);
+      const wasStopped = controller.signal.aborted;
+      const contentAfterError = wasStopped
+        ? streamedContent || "Stopped before the model returned text."
+        : streamedContent
+          ? `${streamedContent}\n\n[Stream interrupted: ${error.message}]`
+          : `I could not reach ${connectionName} for this request. ${error.message}`;
+
+      updateStreamingMessage({
+        content: contentAfterError,
+        isStreaming: false
+      });
     } finally {
+      if (streamControllerRef.current === controller) {
+        streamControllerRef.current = null;
+      }
       setIsSending(false);
     }
   }
@@ -864,17 +953,21 @@ function App() {
                 </div>
               ) : (
                 messages.map((message, index) => (
-                  <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
+                  <article
+                    className={`message ${message.role} ${message.isStreaming ? "is-streaming" : ""} ${
+                      message.isStreaming && !message.content ? "is-loading" : ""
+                    }`}
+                    key={message.id || `${message.role}-${index}`}
+                    aria-live={message.isStreaming ? "polite" : undefined}
+                  >
                     <span>{message.role === "user" ? "You" : activeAgent.name}</span>
-                    <p>{message.content}</p>
+                    <p>
+                      {message.isStreaming && !message.content
+                        ? `Thinking with ${provider === "api" ? apiSettings.model : model}...`
+                        : message.content}
+                    </p>
                   </article>
                 ))
-              )}
-              {isSending && (
-                <article className="message assistant is-loading">
-                  <span>{activeAgent.name}</span>
-                  <p>Thinking with {provider === "api" ? apiSettings.model : model}...</p>
-                </article>
               )}
             </div>
 
@@ -893,17 +986,23 @@ function App() {
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="Write an initial task or a follow-up prompt..."
               />
-              <button
-                disabled={
-                  !draft.trim() ||
-                  isSending ||
-                  (provider === "ollama" && !model) ||
-                  (provider === "api" && !isApiReady)
-                }
-              >
-                <Send size={18} />
-                Send
-              </button>
+              {isSending ? (
+                <button type="button" onClick={stopStreaming}>
+                  <X size={18} />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  disabled={
+                    !draft.trim() ||
+                    (provider === "ollama" && !model) ||
+                    (provider === "api" && !isApiReady)
+                  }
+                >
+                  <Send size={18} />
+                  Send
+                </button>
+              )}
             </form>
           </section>
         </div>
