@@ -454,7 +454,7 @@ const apiSettingsStorageKey = "prompt-lab-api-settings";
 const apiKeyStorageKey = "prompt-lab-api-key";
 
 const apiBaseUrl =
-  import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3001" : "");
+  import.meta.env.VITE_API_URL || "";
 
 function loadAgents() {
   try {

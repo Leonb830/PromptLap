@@ -17,8 +17,22 @@ const rootDir = path.resolve(__dirname, "..");
 app.use(express.json({ limit: "1mb" }));
 app.use((request, response, next) => {
   const origin = request.headers.origin;
-  if (origin && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
-    response.setHeader("Access-Control-Allow-Origin", origin);
+  if (origin) {
+    try {
+      const { protocol, hostname } = new URL(origin);
+      const isAllowedLocalOrigin =
+        protocol === "http:" &&
+        (/^(localhost|127\.0\.0\.1)$/.test(hostname) ||
+          /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+          /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+          /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname));
+
+      if (isAllowedLocalOrigin) {
+        response.setHeader("Access-Control-Allow-Origin", origin);
+      }
+    } catch {
+      // Ignore malformed origins.
+    }
   }
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");

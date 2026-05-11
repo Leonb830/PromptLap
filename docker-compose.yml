@@ -1,0 +1,10 @@
+services:
+  prompt-lab:
+    build: .
+    network_mode: host
+    environment:
+      OLLAMA_URL: "http://127.0.0.1:11434"
+      # Optional server-managed API settings:
+      # OPENROUTER_API_KEY: "your_key"
+      # OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
+      # OPENROUTER_MODEL: "openai/gpt-5.2-chat"

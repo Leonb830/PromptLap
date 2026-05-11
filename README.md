@@ -30,6 +30,51 @@ Pull a model if the model menu is empty:
 ollama pull llama3.2
 ```
 
+## Run With Docker
+
+Build and start the app:
+
+```bash
+docker compose up --build
+```
+
+Open the app on the same computer at:
+
+```text
+http://localhost:3001
+```
+
+To use it from another device on the same Wi-Fi/LAN, find the host computer's
+local IP address and open:
+
+```text
+http://HOST_COMPUTER_IP:3001
+```
+
+For example:
+
+```text
+http://192.168.1.42:3001
+```
+
+The Docker setup points the backend at Ollama on the host computer with:
+
+```text
+OLLAMA_URL=http://127.0.0.1:11434
+```
+
+This Compose setup uses Docker host networking on Linux so the container can
+reach Ollama on the host computer. If Ollama runs on a different machine, edit
+`OLLAMA_URL` in `docker-compose.yml` to that machine's LAN address, for example
+`http://192.168.1.50:11434`.
+
+Useful ways to find the host computer's LAN IP:
+
+```bash
+hostname -I
+ip route get 1.1.1.1
+```
+
 ## API Mode
 
 Switch the connection type from `Ollama` to `API` in the top bar, then enter:
