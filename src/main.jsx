@@ -446,8 +446,12 @@ const promptTemplates = [
 const defaultApiSettings = {
   baseUrl: "https://openrouter.ai/api/v1",
   apiKey: "",
-  model: "openai/gpt-5.2-chat"
+  model: "openai/gpt-5.2-chat",
+  rememberApiKey: false
 };
+
+const apiSettingsStorageKey = "prompt-lab-api-settings";
+const apiKeyStorageKey = "prompt-lab-api-key";
 
 const apiBaseUrl =
   import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3001" : "");
@@ -477,8 +481,19 @@ function loadAgents() {
 
 function loadApiSettings() {
   try {
-    const saved = JSON.parse(localStorage.getItem("prompt-lab-api-settings")) || {};
-    const settings = { ...defaultApiSettings, ...saved };
+    const saved = JSON.parse(localStorage.getItem(apiSettingsStorageKey)) || {};
+    const rememberApiKey = saved.rememberApiKey === true;
+    const legacyApiKey = typeof saved.apiKey === "string" ? saved.apiKey : "";
+    const storedApiKey =
+      (rememberApiKey
+        ? localStorage.getItem(apiKeyStorageKey)
+        : sessionStorage.getItem(apiKeyStorageKey)) || legacyApiKey;
+    const settings = {
+      ...defaultApiSettings,
+      ...saved,
+      apiKey: typeof storedApiKey === "string" ? storedApiKey : "",
+      rememberApiKey
+    };
     settings.baseUrl = typeof settings.baseUrl === "string" ? settings.baseUrl : defaultApiSettings.baseUrl;
     settings.apiKey = typeof settings.apiKey === "string" ? settings.apiKey : "";
     settings.model = typeof settings.model === "string" ? settings.model : defaultApiSettings.model;
@@ -491,9 +506,55 @@ function loadApiSettings() {
       settings.model = defaultApiSettings.model;
     }
 
+    localStorage.setItem(apiSettingsStorageKey, JSON.stringify(persistableApiSettings(settings)));
+    if (settings.apiKey) {
+      if (settings.rememberApiKey) {
+        localStorage.setItem(apiKeyStorageKey, settings.apiKey);
+      } else {
+        sessionStorage.setItem(apiKeyStorageKey, settings.apiKey);
+        localStorage.removeItem(apiKeyStorageKey);
+      }
+    }
+
     return settings;
   } catch {
     return defaultApiSettings;
+  }
+}
+
+function persistableApiSettings(settings) {
+  return {
+    baseUrl: typeof settings.baseUrl === "string" ? settings.baseUrl : defaultApiSettings.baseUrl,
+    model: typeof settings.model === "string" ? settings.model : defaultApiSettings.model,
+    rememberApiKey: settings.rememberApiKey === true
+  };
+}
+
+function persistApiSettings(settings, hasServerApiKey) {
+  try {
+    localStorage.setItem(
+      apiSettingsStorageKey,
+      JSON.stringify({
+        ...persistableApiSettings(settings),
+        rememberApiKey: hasServerApiKey ? false : settings.rememberApiKey === true
+      })
+    );
+
+    if (hasServerApiKey || !settings.apiKey) {
+      localStorage.removeItem(apiKeyStorageKey);
+      sessionStorage.removeItem(apiKeyStorageKey);
+      return;
+    }
+
+    if (settings.rememberApiKey) {
+      localStorage.setItem(apiKeyStorageKey, settings.apiKey);
+      sessionStorage.removeItem(apiKeyStorageKey);
+    } else {
+      sessionStorage.setItem(apiKeyStorageKey, settings.apiKey);
+      localStorage.removeItem(apiKeyStorageKey);
+    }
+  } catch {
+    // Storage may be unavailable in private browsing or restricted environments.
   }
 }
 
@@ -595,6 +656,11 @@ function App() {
   const [model, setModel] = useState("");
   const [provider, setProvider] = useState("ollama");
   const [apiSettings, setApiSettings] = useState(loadApiSettings);
+  const [serverApiConfig, setServerApiConfig] = useState({
+    hasServerApiKey: false,
+    baseUrl: defaultApiSettings.baseUrl,
+    model: defaultApiSettings.model
+  });
   const [health, setHealth] = useState({ ok: false, message: "Checking Ollama..." });
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
@@ -612,8 +678,12 @@ function App() {
   const streamControllerRef = useRef(null);
 
   const activeAgent = agents.find((agent) => agent.id === activeId) || agents[0];
+  const hasServerApiKey = serverApiConfig.hasServerApiKey;
+  const hasClientApiKey = Boolean(apiSettings.apiKey.trim());
+  const canUseApiCredentials =
+    hasServerApiKey || (Boolean(apiSettings.baseUrl.trim()) && hasClientApiKey);
   const isApiReady =
-    Boolean(apiSettings.baseUrl.trim()) && Boolean(apiSettings.apiKey.trim()) && Boolean(apiSettings.model.trim());
+    Boolean(apiSettings.model.trim()) && canUseApiCredentials;
   const promptText = isEditingAgent ? agentDraft.systemPrompt : activeAgent?.systemPrompt || "";
 
   const promptScore = useMemo(() => {
@@ -625,11 +695,12 @@ function App() {
   }, [agents]);
 
   useEffect(() => {
-    localStorage.setItem("prompt-lab-api-settings", JSON.stringify(apiSettings));
-  }, [apiSettings]);
+    persistApiSettings(apiSettings, hasServerApiKey);
+  }, [apiSettings, hasServerApiKey]);
 
   useEffect(() => {
     refreshOllama();
+    refreshApiConfig();
   }, []);
 
   useEffect(() => {
@@ -637,6 +708,39 @@ function App() {
     setAiSuggestions([]);
     setSuggestionStatus({ type: "idle", message: "" });
   }, [activeAgent?.id]);
+
+  async function refreshApiConfig() {
+    try {
+      const response = await fetch(apiUrl("/api/api-settings"));
+      const data = await readApiJson(response, "Could not load API settings.");
+      const nextConfig = {
+        hasServerApiKey: Boolean(data.hasServerApiKey),
+        baseUrl: typeof data.baseUrl === "string" && data.baseUrl ? data.baseUrl : defaultApiSettings.baseUrl,
+        model: typeof data.model === "string" && data.model ? data.model : defaultApiSettings.model
+      };
+
+      setServerApiConfig(nextConfig);
+      setApiSettings((current) => ({
+        ...current,
+        baseUrl: nextConfig.hasServerApiKey ? nextConfig.baseUrl : current.baseUrl,
+        model:
+          nextConfig.hasServerApiKey && current.model === defaultApiSettings.model
+            ? nextConfig.model
+            : current.model,
+        apiKey: nextConfig.hasServerApiKey ? "" : current.apiKey,
+        rememberApiKey: nextConfig.hasServerApiKey ? false : current.rememberApiKey
+      }));
+
+      if (nextConfig.hasServerApiKey) {
+        setApiModelStatus({
+          type: "success",
+          message: "Server-managed API key is ready."
+        });
+      }
+    } catch {
+      setServerApiConfig((current) => ({ ...current, hasServerApiKey: false }));
+    }
+  }
 
   async function refreshOllama() {
     setHealth({ ok: false, message: "Checking Ollama..." });
@@ -671,6 +775,15 @@ function App() {
     setApiModelStatus({ type: "idle", message: "" });
   }
 
+  function apiCredentialPayload() {
+    if (hasServerApiKey) return {};
+
+    return {
+      apiBaseUrl: apiSettings.baseUrl.trim(),
+      apiKey: apiSettings.apiKey.trim()
+    };
+  }
+
   function applyPromptSuggestion(suggestionId, snippet) {
     setAgentDraft((current) => {
       const existing = current.systemPrompt.trim();
@@ -696,18 +809,18 @@ function App() {
   }
 
   async function refreshApiModels() {
-    if (!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim()) return;
+    if (!canUseApiCredentials) return;
 
     setIsLoadingApiModels(true);
-    setApiModelStatus({ type: "loading", message: "Loading models from OpenRouter..." });
+    setApiModelStatus({
+      type: "loading",
+      message: hasServerApiKey ? "Loading models with the server key..." : "Loading models from OpenRouter..."
+    });
     try {
       const response = await fetch(apiUrl("/api/api-models"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiBaseUrl: apiSettings.baseUrl.trim(),
-          apiKey: apiSettings.apiKey.trim()
-        })
+        body: JSON.stringify(apiCredentialPayload())
       });
       const data = await readApiJson(response, "Could not load API models.");
       if (!response.ok) throw new Error(data.message || "Could not load API models.");
@@ -828,10 +941,7 @@ function App() {
     if (!promptText.trim() || !selectedModel || isImprovingPrompt) return;
     const apiPayload =
       provider === "api"
-        ? {
-            apiBaseUrl: apiSettings.baseUrl.trim(),
-            apiKey: apiSettings.apiKey.trim()
-          }
+        ? apiCredentialPayload()
         : {};
 
     setIsImprovingPrompt(true);
@@ -874,10 +984,7 @@ function App() {
     if (!content || !activeAgent || !selectedModel || isSending) return;
     const apiPayload =
       provider === "api"
-        ? {
-            apiBaseUrl: apiSettings.baseUrl.trim(),
-            apiKey: apiSettings.apiKey.trim()
-          }
+        ? apiCredentialPayload()
         : {};
 
     const nextMessages = [...messages, { id: crypto.randomUUID(), role: "user", content }];
@@ -1057,9 +1164,13 @@ function App() {
                   )}
                   <button
                     className="icon-button"
-                    disabled={!apiSettings.baseUrl.trim() || !apiSettings.apiKey.trim() || isLoadingApiModels}
+                    disabled={!canUseApiCredentials || isLoadingApiModels}
                     onClick={refreshApiModels}
-                    title="Load available models from OpenRouter"
+                    title={
+                      hasServerApiKey
+                        ? "Load available models with the server key"
+                        : "Load available models from OpenRouter"
+                    }
                   >
                     <RefreshCw size={17} />
                   </button>
@@ -1070,19 +1181,40 @@ function App() {
               <>
                 <div className="api-settings">
                   <input
+                    readOnly={hasServerApiKey}
                     value={apiSettings.baseUrl}
                     onChange={(event) => updateApiSettings({ baseUrl: event.target.value })}
                     placeholder="OpenRouter API base URL"
                   />
-                  <input
-                    type="password"
-                    value={apiSettings.apiKey}
-                    onChange={(event) => updateApiSettings({ apiKey: event.target.value })}
-                    placeholder="API key"
-                  />
+                  {hasServerApiKey ? (
+                    <div className="api-key-managed">
+                      <CheckCircle2 size={16} />
+                      <span>Server-managed API key</span>
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        type="password"
+                        value={apiSettings.apiKey}
+                        onChange={(event) => updateApiSettings({ apiKey: event.target.value })}
+                        placeholder="API key"
+                      />
+                      <label className="api-key-toggle">
+                        <input
+                          checked={apiSettings.rememberApiKey}
+                          onChange={(event) => updateApiSettings({ rememberApiKey: event.target.checked })}
+                          type="checkbox"
+                        />
+                        <span>Remember key on this device</span>
+                      </label>
+                    </>
+                  )}
                 </div>
                 <p className={`api-model-status ${apiModelStatus.type}`}>
-                  {apiModelStatus.message || "Click refresh to load models available to this API key."}
+                  {apiModelStatus.message ||
+                    (hasServerApiKey
+                      ? "Click refresh to load models with the server-managed key."
+                      : "API keys stay in this browser session unless you choose to remember them.")}
                 </p>
               </>
             )}
@@ -1107,7 +1239,9 @@ function App() {
                   : apiModels.length
                     ? `${apiModels.length} API models loaded`
                     : isApiReady
-                      ? "API mode ready"
+                      ? hasServerApiKey
+                        ? "Server API key ready"
+                        : "API mode ready"
                       : "Add API URL, key, and model"
               : health.ok
                 ? "Ollama ready"

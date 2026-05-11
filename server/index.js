@@ -6,6 +6,10 @@ import OpenAI from "openai";
 const app = express();
 const port = process.env.PORT || 3001;
 const ollamaBaseUrl = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
+const defaultApiBaseUrl = "https://openrouter.ai/api/v1";
+const serverApiBaseUrl = process.env.OPENROUTER_BASE_URL || process.env.API_BASE_URL || defaultApiBaseUrl;
+const serverApiKey = process.env.OPENROUTER_API_KEY || process.env.API_KEY || "";
+const serverApiModel = process.env.OPENROUTER_MODEL || process.env.API_MODEL || "openai/gpt-5.2-chat";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -60,10 +64,9 @@ function isNonEmptyString(value) {
 }
 
 function normalizeOpenRouterServerUrl(apiBaseUrl) {
-  const fallback = "https://openrouter.ai/api/v1";
   const trimmed = typeof apiBaseUrl === "string" ? apiBaseUrl.trim() : "";
 
-  if (!trimmed) return fallback;
+  if (!trimmed) return defaultApiBaseUrl;
 
   try {
     const url = new URL(trimmed);
@@ -71,7 +74,7 @@ function normalizeOpenRouterServerUrl(apiBaseUrl) {
     url.search = "";
 
     if (url.hostname === "api.openai.com") {
-      return fallback;
+      return defaultApiBaseUrl;
     }
 
     url.pathname = url.pathname
@@ -87,8 +90,42 @@ function normalizeOpenRouterServerUrl(apiBaseUrl) {
 
     return url.toString().replace(/\/$/, "");
   } catch {
-    return fallback;
+    return defaultApiBaseUrl;
   }
+}
+
+function resolveApiCredentials({ apiBaseUrl, apiKey }) {
+  const clientApiKey = typeof apiKey === "string" ? apiKey.trim() : "";
+
+  if (clientApiKey) {
+    return {
+      apiBaseUrl,
+      apiKey: clientApiKey,
+      source: "client",
+    };
+  }
+
+  if (isNonEmptyString(serverApiKey)) {
+    return {
+      apiBaseUrl: serverApiBaseUrl,
+      apiKey: serverApiKey.trim(),
+      source: "server",
+    };
+  }
+
+  return {
+    apiBaseUrl,
+    apiKey: "",
+    source: "missing",
+  };
+}
+
+function hasUsableApiCredentials({ apiBaseUrl, apiKey }) {
+  const credentials = resolveApiCredentials({ apiBaseUrl, apiKey });
+  return (
+    isNonEmptyString(credentials.apiKey) &&
+    (credentials.source === "server" || isNonEmptyString(apiBaseUrl))
+  );
 }
 
 function openRouterClient({ apiBaseUrl, apiKey }) {
@@ -381,18 +418,28 @@ app.get("/api/models", async (_request, response) => {
   }
 });
 
+app.get("/api/api-settings", (_request, response) => {
+  response.json({
+    baseUrl: normalizeOpenRouterServerUrl(serverApiBaseUrl),
+    model: serverApiModel,
+    hasServerApiKey: isNonEmptyString(serverApiKey),
+  });
+});
+
 app.post("/api/api-models", async (request, response) => {
   const { apiBaseUrl, apiKey } = request.body || {};
+  const credentials = resolveApiCredentials({ apiBaseUrl, apiKey });
 
-  if (!isNonEmptyString(apiBaseUrl) || !isNonEmptyString(apiKey)) {
+  if (!hasUsableApiCredentials({ apiBaseUrl, apiKey })) {
     response.status(400).json({
-      message: "apiBaseUrl and apiKey are required to list API models.",
+      message:
+        "Add an API key in the app or configure OPENROUTER_API_KEY on the server.",
     });
     return;
   }
 
   try {
-    response.json({ models: await apiModels({ apiBaseUrl, apiKey }) });
+    response.json({ models: await apiModels(credentials) });
   } catch (error) {
     response.status(502).json({ message: normalizeErrorMessage(error) });
   }
@@ -401,6 +448,7 @@ app.post("/api/api-models", async (request, response) => {
 app.post("/api/chat", async (request, response) => {
   const { provider, model, systemPrompt, messages, apiBaseUrl, apiKey, stream } =
     request.body || {};
+  const credentials = resolveApiCredentials({ apiBaseUrl, apiKey });
   const effectiveProvider =
     provider === "api" || (!provider && (apiBaseUrl || apiKey))
       ? "api"
@@ -419,11 +467,14 @@ app.post("/api/chat", async (request, response) => {
 
   if (
     effectiveProvider === "api" &&
-    (!isNonEmptyString(apiBaseUrl) || !isNonEmptyString(apiKey))
+    !hasUsableApiCredentials({ apiBaseUrl, apiKey })
   ) {
     response
       .status(400)
-      .json({ message: "apiBaseUrl and apiKey are required for API chat." });
+      .json({
+        message:
+          "Add an API key in the app or configure OPENROUTER_API_KEY on the server.",
+      });
     return;
   }
 
@@ -435,8 +486,8 @@ app.post("/api/chat", async (request, response) => {
       try {
         if (effectiveProvider === "api") {
           await apiChatStream({
-            apiBaseUrl,
-            apiKey,
+            apiBaseUrl: credentials.apiBaseUrl,
+            apiKey: credentials.apiKey,
             model,
             systemPrompt,
             messages,
@@ -463,8 +514,8 @@ app.post("/api/chat", async (request, response) => {
 
     if (effectiveProvider === "api") {
       const data = await apiChat({
-        apiBaseUrl,
-        apiKey,
+        apiBaseUrl: credentials.apiBaseUrl,
+        apiKey: credentials.apiKey,
         model,
         systemPrompt,
         messages,
@@ -497,6 +548,7 @@ app.post("/api/chat", async (request, response) => {
 app.post("/api/prompt-suggestions", async (request, response) => {
   const { provider, model, systemPrompt, apiBaseUrl, apiKey } =
     request.body || {};
+  const credentials = resolveApiCredentials({ apiBaseUrl, apiKey });
   const effectiveProvider =
     provider === "api" || (!provider && (apiBaseUrl || apiKey))
       ? "api"
@@ -509,9 +561,10 @@ app.post("/api/prompt-suggestions", async (request, response) => {
     return;
   }
 
-  if (effectiveProvider === "api" && (!isNonEmptyString(apiBaseUrl) || !isNonEmptyString(apiKey))) {
+  if (effectiveProvider === "api" && !hasUsableApiCredentials({ apiBaseUrl, apiKey })) {
     response.status(400).json({
-      message: "apiBaseUrl and apiKey are required for API suggestions.",
+      message:
+        "Add an API key in the app or configure OPENROUTER_API_KEY on the server.",
     });
     return;
   }
@@ -520,8 +573,8 @@ app.post("/api/prompt-suggestions", async (request, response) => {
     const suggestions =
       effectiveProvider === "api"
         ? await apiPromptSuggestions({
-            apiBaseUrl,
-            apiKey,
+            apiBaseUrl: credentials.apiBaseUrl,
+            apiKey: credentials.apiKey,
             model,
             systemPrompt,
           })

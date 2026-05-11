@@ -38,7 +38,15 @@ Switch the connection type from `Ollama` to `API` in the top bar, then enter:
 - API key
 - Model name, for example `openai/gpt-5.2-chat`
 
-The backend uses the OpenAI Node SDK against OpenRouter's OpenAI-compatible API with `baseURL: "https://openrouter.ai/api/v1"`. Chat and prompt-improvement requests use `openai.chat.completions.create`, and the model refresh button uses `openai.models.list` so you do not need to hardcode a model. Once models are loaded, the model field becomes a dropdown and automatically selects an available model if the saved one is invalid. API settings are stored in this local browser's storage for convenience.
+The backend uses the OpenAI Node SDK against OpenRouter's OpenAI-compatible API with `baseURL: "https://openrouter.ai/api/v1"`. Chat and prompt-improvement requests use `openai.chat.completions.create`, and the model refresh button uses `openai.models.list` so you do not need to hardcode a model. Once models are loaded, the model field becomes a dropdown and automatically selects an available model if the saved one is invalid.
+
+API keys are kept in this browser session by default. Enable `Remember key on this device` only if you want the key stored locally. For safer local use, configure the key on the server instead:
+
+```bash
+OPENROUTER_API_KEY=your_key npm run dev
+```
+
+You can also set `OPENROUTER_BASE_URL` and `OPENROUTER_MODEL`. When `OPENROUTER_API_KEY` is present, the browser does not send or store an API key, and the backend uses the server-configured API base URL.
 
 ## What It Does
 
